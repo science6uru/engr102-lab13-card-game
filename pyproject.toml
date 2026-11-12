@@ -1,0 +1,9 @@
+[project]
+name = "engr102-lab13-card-game"
+version = "0.1.0"
+description = "ENGR 102 Lab 13 team project: a card game built with pygame"
+readme = "README.md"
+requires-python = ">=3.12"
+dependencies = [
+    "pygame>=2.6",
+]

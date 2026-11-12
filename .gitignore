@@ -1,0 +1,11 @@
+# Local-only working files (not ready to share yet)
+card_demo.py
+game_plan.txt
+
+# Python
+.venv/
+__pycache__/
+*.pyc
+
+# OS noise
+.DS_Store
