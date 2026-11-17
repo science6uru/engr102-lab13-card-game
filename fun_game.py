@@ -32,3 +32,23 @@ def make_card(suit, rank, zone="deck", pos=DECK_POS, face_up=False):
 def make_deck():
     """Return a list of 52 card dicts, one for every suit x rank."""
     raise NotImplementedError("Stage 1: make_deck")
+
+
+# ----------------------------------------------------------------------
+# Stage 2 - PLAYERS, ZONES, SHUFFLING AND DEALING (issue #2)
+# ----------------------------------------------------------------------
+def reset_card_zone(card, zone, pos=None, slot=None, face_up=None,
+                    owner=None):
+    raise NotImplementedError("Stage 2: reset_card_zone")
+
+
+def shuffle_deck(deck):
+    raise NotImplementedError("Stage 2: shuffle_deck")
+
+
+def deal_card(deck, hand):
+    raise NotImplementedError("Stage 2: deal_card")
+
+
+def make_state(num_players=NUM_PLAYERS):
+    raise NotImplementedError("Stage 2: make_state")

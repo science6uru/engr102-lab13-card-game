@@ -92,5 +92,108 @@ class Stage1CardsAsData(unittest.TestCase):
         self.assertIsNone(g.make_card("spades", "10")["owner"])
 
 
+def card(suit="hearts", rank="queen"):
+    """Stand-in for make_card() until Stage 1 merges - same contract.
+
+    Lets the Stage 2 tests run while make_card is still a stub. Once
+    Stage 1 lands, these tests could use g.make_card directly.
+    """
+    return {"suit": suit, "rank": rank, "pos": list(g.DECK_POS),
+            "face_up": False, "zone": "deck", "slot": None,
+            "owner": None, "motion": None, "target": [0.0, 0.0]}
+
+
+def deck_of_52():
+    """52 fresh cards via the stand-in (avoids the make_deck stub)."""
+    return [card(s, r) for s in g.SUITS for r in g.RANKS]
+
+
+class Stage2ZonesShufflingDealing(unittest.TestCase):
+    """Issue #2 - reset_card_zone, shuffle_deck, deal_card, make_state."""
+
+    def test_2_1_reset_zone_without_pos(self):
+        """zone/slot/face_up change; motion is left alone."""
+        c = card()
+        c["motion"] = "glide"                     # must NOT be touched
+        g.reset_card_zone(c, "grid", slot=2, face_up=True)
+        self.assertEqual(c["zone"], "grid")
+        self.assertEqual(c["slot"], 2)
+        self.assertTrue(c["face_up"])
+        self.assertEqual(c["motion"], "glide")
+
+    def test_2_2_reset_zone_with_pos_teleports_and_clears_motion(self):
+        """Giving a pos moves the card there and clears motion."""
+        c = card()
+        c["motion"] = "glide"
+        c["pos"] = [0.0, 0.0]
+        g.reset_card_zone(c, "discard", pos=g.DISCARD_POS)
+        self.assertEqual(c["pos"], list(g.DISCARD_POS))
+        self.assertIsNone(c["motion"])
+        self.assertEqual(c["zone"], "discard")
+
+    def test_2_3_shuffle_keeps_same_cards_different_order(self):
+        """Same 52 (suit, rank) pairs, different order. Needs the real
+        make_deck, so this test stays RED until Stage 1 merges."""
+        deck = g.make_deck()
+        before = sorted((c["suit"], c["rank"]) for c in deck)
+        g.shuffle_deck(deck)
+        after = sorted((c["suit"], c["rank"]) for c in deck)
+        self.assertEqual(before, after)
+        self.assertNotEqual([c["suit"] for c in deck],
+                            [c["suit"] for c in sorted(
+                                deck, key=lambda c: (c["suit"], c["rank"]))])
+
+    def test_2_4_deal_from_empty_deck_returns_none(self):
+        """Empty deck: None, no crash, hand unchanged."""
+        hand = [None] * 5
+        self.assertIsNone(g.deal_card([], hand))
+        self.assertEqual(hand, [None] * 5)
+
+    def test_2_5_deal_moves_top_card_into_the_hand(self):
+        """Fresh deck into an empty hand: hand[0] is the card, it is
+        face up in zone "hand" slot 0, and the deck shrinks by 1."""
+        deck = deck_of_52()
+        top = deck[0]
+        hand = [None] * 1
+        dealt = g.deal_card(deck, hand)
+        self.assertIs(dealt, top)
+        self.assertIs(hand[0], top)
+        self.assertEqual(top["zone"], "hand")
+        self.assertEqual(top["slot"], 0)
+        self.assertTrue(top["face_up"])
+        self.assertEqual(len(deck), 51)
+
+    def test_2_6_deal_into_full_hand_returns_none(self):
+        """Full hand: None, nothing changes anywhere."""
+        deck = deck_of_52()
+        full = [card() for _ in range(2)]
+        self.assertIsNone(g.deal_card(deck, full))
+        self.assertEqual(len(deck), 52)
+
+    def test_2_7_dealing_to_player_1_leaves_player_0_alone(self):
+        """deal_card into player 1's hand: player 0's hand stays empty."""
+        state = g.make_state(2)
+        deck = deck_of_52()
+        g.deal_card(deck, state["players"][1]["hand_occ"])
+        self.assertIsNotNone(state["players"][1]["hand_occ"][0])
+        self.assertEqual(state["players"][0]["hand_occ"], [None])
+
+    def test_2_8_make_state_players_are_separate(self):
+        """Two players, OWN lists each, current starts at 0."""
+        state = g.make_state(2)
+        self.assertEqual(len(state["players"]), 2)
+        self.assertEqual(state["current"], 0)
+        state["players"][0]["grid_occ"][0] = "x"
+        self.assertIsNone(state["players"][1]["grid_occ"][0])
+
+    def test_2_9_reset_zone_sets_and_clears_owner(self):
+        """owner=1 sticks in "grid"; moving to "discard" clears it."""
+        c = card()
+        g.reset_card_zone(c, "grid", slot=1, owner=1)
+        self.assertEqual(c["owner"], 1)
+        g.reset_card_zone(c, "discard")
+        self.assertIsNone(c["owner"])
+
+
 if __name__ == "__main__":
     unittest.main()
