@@ -911,6 +911,8 @@ class Stage11Wiring(unittest.TestCase):
         self.assertEqual(held["zone"], "discard")
         self.assertIs(s["discard"][-1], held)
         self.assertIsNone(s["players"][0]["hand_occ"][0])
+        self.assertEqual((s["current"], s["phase"]), (0, "flip"))
+        key(s, pygame.K_SPACE)
         self.assertEqual((s["current"], s["phase"]), (1, "draw"))
 
     def test_11_15_a_card_from_the_discard_must_be_swapped_in(self):
@@ -955,6 +957,8 @@ class Stage11Wiring(unittest.TestCase):
         draw_and_land(s)                           # player 1: the final turn
         press(s, g.PLAYER_HAND_SLOTS[1][0])
         release(s, g.DISCARD_POS)                  # throws clubs 10 away
+        self.assertEqual(s["phase"], "flip")        # optional flip offered
+        key(s, pygame.K_SPACE)                     # player 1 skips the flip
         self.assertEqual(s["phase"], "round_over")
         g.update(s, 1 / 120, (0, 0), {})           # update scores the hole
         self.assertEqual(s["phase"], "scored")
@@ -1027,6 +1031,122 @@ class Stage11Wiring(unittest.TestCase):
         lines = [text for text, _ in g.golf_hud_lines(s)]
         self.assertIn("PLAYER 1: DRAW A CARD", lines)
         self.assertIn("PLAYER 2 IS DONE: LAST TURN", lines)
+
+
+class Stage11OptionalFlipAndKnock(unittest.TestCase):
+    """After discarding a deck card the flip is OPTIONAL (flip or skip).
+    Knocking and the help panel are wired in too."""
+
+    def discard_a_deck_card(self):
+        s = golf_table("draw")
+        draw_and_land(s)
+        press(s, g.PLAYER_HAND_SLOTS[0][0])
+        release(s, g.DISCARD_POS)
+        return s
+
+    def test_11_24_discarding_offers_an_optional_flip(self):
+        s = self.discard_a_deck_card()
+        self.assertEqual((s["current"], s["phase"]), (0, "flip"))
+        self.assertFalse(any(c["face_up"]
+                             for c in s["players"][0]["grid_occ"]))
+        self.assertIsNotNone(g.action_button(s))
+        self.assertEqual(g.action_button(s)[1], "SKIP")
+
+    def test_11_25_flipping_a_face_down_card_ends_the_turn(self):
+        s = self.discard_a_deck_card()
+        target = s["players"][0]["grid_occ"][1]
+        press(s, g.PLAYER_GRID_SLOTS[0][1])
+        self.assertTrue(target["face_up"])
+        self.assertEqual((s["current"], s["phase"]), (1, "draw"))
+
+    def test_11_26_only_your_own_face_down_cards_can_be_flipped(self):
+        s = self.discard_a_deck_card()
+        press(s, g.PLAYER_GRID_SLOTS[1][0])        # the other player's card
+        self.assertFalse(s["players"][1]["grid_occ"][0]["face_up"])
+        self.assertEqual((s["current"], s["phase"]), (0, "flip"))
+        g.flip_card(s["players"][0]["grid_occ"][0], {})   # already face up
+        run(s, 1.0)
+        press(s, g.PLAYER_GRID_SLOTS[0][0])
+        self.assertEqual((s["current"], s["phase"]), (0, "flip"))
+
+    def test_11_27_space_skips_the_flip(self):
+        s = self.discard_a_deck_card()
+        key(s, pygame.K_SPACE)
+        self.assertEqual((s["current"], s["phase"]), (1, "draw"))
+        self.assertFalse(any(c["face_up"]
+                             for c in s["players"][0]["grid_occ"]))
+
+    def test_11_28_the_skip_button_skips_the_flip(self):
+        s = self.discard_a_deck_card()
+        rect, label = g.action_button(s)
+        self.assertEqual(label, "SKIP")
+        press(s, rect.center)
+        self.assertEqual((s["current"], s["phase"]), (1, "draw"))
+        self.assertFalse(any(c["face_up"]
+                             for c in s["players"][0]["grid_occ"]))
+
+    def test_11_29_no_face_down_card_left_ends_the_turn_by_itself(self):
+        s = golf_table("draw")
+        for c in s["players"][0]["grid_occ"]:
+            g.flip_card(c, {})
+        run(s, 1.0)
+        draw_and_land(s)
+        press(s, g.PLAYER_HAND_SLOTS[0][0])
+        release(s, g.DISCARD_POS)
+        self.assertEqual((s["current"], s["phase"]), (1, "draw"))
+        self.assertEqual(s["ender"], 0)
+
+    def test_11_30_skip_does_nothing_outside_the_flip_phase(self):
+        s = golf_table("draw")
+        self.assertFalse(g.skip_flip(s))
+        key(s, pygame.K_SPACE)                     # in draw phase: draws
+        self.assertEqual(s["phase"], "place")
+        self.assertIsNone(g.action_button(s))
+
+    def test_11_31_a_card_from_the_discard_still_has_no_flip(self):
+        s = golf_table("draw")
+        g.start_discard(s, {})
+        run(s, 1.0)
+        press(s, g.DISCARD_POS)
+        run(s, 1.0)
+        press(s, g.PLAYER_HAND_SLOTS[0][0])
+        release(s, g.PLAYER_GRID_SLOTS[0][0])
+        self.assertEqual((s["current"], s["phase"]), (1, "draw"))
+
+    def test_11_32_knock_ends_the_hole_after_one_last_turn(self):
+        s = golf_table("draw")
+        key(s, pygame.K_k)
+        self.assertEqual(s["ender"], 0)
+        self.assertEqual((s["current"], s["phase"]), (1, "draw"))
+        self.assertFalse(g.knock(s, {}))           # already knocked
+        draw_and_land(s)
+        press(s, g.PLAYER_HAND_SLOTS[1][0])
+        release(s, g.PLAYER_GRID_SLOTS[1][0])      # swap: the last turn ends
+        self.assertEqual(s["phase"], "round_over")
+
+    def test_11_33_knock_button_and_knock_only_at_the_start_of_a_turn(self):
+        s = golf_table("draw")
+        rect, label = g.action_button(s)
+        self.assertEqual(label, "KNOCK")
+        press(s, rect.center)
+        self.assertEqual(s["ender"], 0)
+        s2 = golf_table("draw")
+        draw_and_land(s2)                          # now holding a card
+        self.assertFalse(g.knock(s2, {}))
+        self.assertIsNone(s2["ender"])
+
+    def test_11_34_the_help_panel_opens_and_closes(self):
+        s = golf_table("draw")
+        key(s, pygame.K_h)
+        self.assertTrue(s["help_on"])
+        key(s, pygame.K_SPACE)                     # closes it, draws nothing
+        self.assertFalse(s["help_on"])
+        self.assertEqual(s["phase"], "draw")
+
+    def test_11_35_the_hud_explains_the_optional_flip(self):
+        s = golf_table("flip")
+        lines = [text for text, _ in g.golf_hud_lines(s)]
+        self.assertIn("PLAYER 1: FLIP A CARD (OPTIONAL)", lines)
 
 
 class Stage12Polish(unittest.TestCase):

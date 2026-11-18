@@ -31,7 +31,7 @@ PLAYER_HAND_SLOTS = [[(500, 482)],
 
 
 def make_card(suit, rank, zone="deck", pos=DECK_POS, face_up=False):
-""" make card """
+    """ make card """
     card = {"suit": suit, "rank": rank,
             "pos": list(pos),  # store as a list, not the original tuple
             "face_up": face_up, "zone": zone, "slot": None, "owner": None,
@@ -55,7 +55,7 @@ def make_card(suit, rank, zone="deck", pos=DECK_POS, face_up=False):
 
 
 def make_deck():
-""" make deck """
+    """ make deck """
     deck = []
     for suit in SUITS:
         for rank in RANKS:
@@ -86,7 +86,7 @@ def reset_card_zone(card, zone, pos=None, slot=None, face_up=None,
 
 
 def shuffle_deck(deck):
-""" shuffle deck """
+    """ shuffle deck """
     random.shuffle(deck)
 
 
@@ -124,11 +124,12 @@ def make_state(num_players=NUM_PLAYERS):
              "sfx": None, "queue": [],
              "rules_on": False,   # True = Golf rules (main() turns them on)
              "discard": [],        # the discard pile, top (newest) card LAST
-             "phase": "reveal",   # reveal, draw, place, round_over, scored
+             "phase": "reveal",   # reveal, draw, place, flip, round_over, scored
              "hole": 1,           # which hole is being played (1..HOLES)
              "ender": None,       # player who turned their last card up
              "drawn_from": None,  # "deck" or "discard" during a turn
-             "revealed": [0] * num_players}   # flips done while revealing
+             "revealed": [0] * num_players,   # flips done while revealing
+             "help_on": False}   # True = the how-to-play panel is open
     return state
 
 
@@ -141,12 +142,12 @@ ASSETS_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)),
 
 
 def scale_card(surface):
-""" returns the picture resized to CARD_SIZE. Use pygame.transform.smoothscale."""
+    """ returns the picture resized to CARD_SIZE. Use pygame.transform.smoothscale."""
     return pygame.transform.smoothscale(surface, CARD_SIZE)
 
 
 def load_card_face(suit, rank):
-   """ loads one front image from the folder, then runs it through scale_card. """      
+    """ loads one front image from the folder, then runs it through scale_card. """      
     filename = f"{rank} of {suit}.png"
     path = os.path.join(ASSETS_DIR, "cards", "fronts", suit, filename)
 
@@ -155,7 +156,7 @@ def load_card_face(suit, rank):
 
 
 def load_deck_faces():
-""" returns a dict {(suit, rank): Surface} by calling load_card_face for all 52 combinations (a dict comprehension works well). Afterwards, finding any card's picture is a single lookup: faces[("hearts", "queen")]. """
+    """ returns a dict {(suit, rank): Surface} by calling load_card_face for all 52 combinations (a dict comprehension works well). Afterwards, finding any card's picture is a single lookup: faces[("hearts", "queen")]. """
     return {
         (suit, rank): load_card_face(suit, rank)
         for suit in SUITS
@@ -164,7 +165,7 @@ def load_deck_faces():
 
 
 def load_card_back(color="blue"):
-""" loads card back <color>.png and scales it to CARD_SIZE. """
+    """ loads card back <color>.png and scales it to CARD_SIZE. """
     filename = f"card back {color}.png"
     path = os.path.join(ASSETS_DIR, "cards", "backs", filename)
 
@@ -173,7 +174,7 @@ def load_card_back(color="blue"):
 
 
 def load_sfx():
-""" sounds """
+    """ sounds """
     kinds = [
         "slide",
         "place",
@@ -253,7 +254,7 @@ def create_display():
 
 
 def card_rect(card):
-""" eturns the pygame.Rect a card covers: CARD_SIZE big, centered on card["pos"]. """
+    """ eturns the pygame.Rect a card covers: CARD_SIZE big, centered on card["pos"]. """
     rect = pygame.Rect((0, 0), CARD_SIZE)
     rect.center = (round(card["pos"][0]), round(card["pos"][1]))
     return rect
@@ -405,6 +406,10 @@ def render(screen, state, font, faces, back):
                 draw_card(screen, card, faces, back)
     for card in moving:
         draw_card(screen, card, faces, back)
+    if state.get("rules_on"):
+        draw_action_button(screen, font, state)
+        if state.get("help_on"):
+            draw_help(screen, font)
 
 
 # Stage 5 - THE GAME LOOP, TIME AND VSYNC
@@ -413,8 +418,8 @@ MAX_DT = 0.05    # clamp: a stalled frame must not teleport things
 
 def draw_hud(screen, font, message):
     """Controls hint and the current message."""
-    hint = font.render("Click deck/discard or SPACE to draw | Drag to place"
-                       " | R: new game | Esc quit", True, TEXT_COLOR)
+    hint = font.render("SPACE: draw | K: knock | H: help | R: new game"
+                       " | Esc: quit", True, TEXT_COLOR)
     screen.blit(hint, (12, 10))
     if message:
         surf = font.render(message, True, (255, 230, 120))
@@ -425,7 +430,7 @@ DEAL_PICK_DIST = 90   # px around DECK_POS that counts as clicking the deck
 
 
 def next_player(state):
-""" next player """
+    """ next player """
     state["current"] = (state["current"] + 1) % len(state["players"])
 
 
@@ -436,6 +441,13 @@ def handle_input(events, state, sfx, mouse_pos):
     for event in events:
         if event.type == pygame.QUIT:
             return False
+        if rules and state.get("help_on"):
+            # the help panel is open: any key or click just closes it
+            if event.type == pygame.KEYDOWN and event.key == pygame.K_ESCAPE:
+                return False
+            if event.type in (pygame.KEYDOWN, pygame.MOUSEBUTTONDOWN):
+                state["help_on"] = False
+            continue
         if event.type == pygame.KEYDOWN:
             if event.key == pygame.K_ESCAPE:
                 return False
@@ -447,6 +459,10 @@ def handle_input(events, state, sfx, mouse_pos):
             elif event.key == pygame.K_TAB:
                 if not rules:             # Golf passes the turn by itself
                     next_player(state)
+            elif event.key == pygame.K_k and rules:
+                knock(state, sfx)
+            elif event.key == pygame.K_h and rules:
+                state["help_on"] = True
             elif event.key == pygame.K_r:
                 state["queue"] = []
                 if rules:
@@ -528,7 +544,7 @@ def _bring_window_to_front():
 
 
 def main(frames=None):
-""" main """
+    """ main """
     pygame.init()
     screen, refresh_hz, vsynced = create_display()
     pygame.display.set_caption("Golf - 2 players")
@@ -541,6 +557,7 @@ def main(frames=None):
     state = make_state(NUM_PLAYERS)
     state["sfx"] = sfx
     state["rules_on"] = True
+    state["help_on"] = True      # show how-to-play on launch
     reset_table(state, sfx)
 
     clock = pygame.time.Clock()
@@ -687,7 +704,7 @@ def release_card(card, mouse_pos, state):
         send_card(card, DISCARD_POS, "discard", None, face_up=True)
         _push_discard(state, card)
         if rules:
-            next_turn(state)
+            after_discard(state)
         return
 
     # b) nearest slot of the card's OWN player's grid
@@ -722,17 +739,17 @@ SNAP_DIST = 80   # px: how close the mouse must be to a slot or the discard
 
 
 def _distance(a, b):
-""" find distance between locations """
+    """ find distance between locations """
     return math.hypot(a[0] - b[0], a[1] - b[1])
 
 
 def _push_discard(state, card):
-         """ move card to discard """
+    """ move card to discard """
     state.setdefault("discard", []).append(card)
 
 
 def _home_pos(card):
-""" looks up the target screen coordinates (x, y) where a card belongs based on who owns it, where it is currently located, and which slot it occupies. """
+    """ looks up the target screen coordinates (x, y) where a card belongs based on who owns it, where it is currently located, and which slot it occupies. """
     table = PLAYER_HAND_SLOTS if card["zone"] == "hand" else PLAYER_GRID_SLOTS
     return table[card["owner"]][card["slot"]]
 
@@ -794,7 +811,7 @@ def update_card(card, dt, mouse_pos, sfx):
 
 
 def _start_deal_flight(card, target):
-""" initializes the animation state for a card being dealt from one point to another """
+    """ initializes the animation state for a card being dealt from one point to another """
     card["motion"] = "deal"
     card["t"] = 0.0
     card["start"] = list(card["pos"])
@@ -903,7 +920,7 @@ def legal_move(state, card, target):
 
 
 def _all_face_up(cards):
-""" all cards face up """
+    """ all cards face up """
     return all(c is not None and c["face_up"] for c in cards)
 
 
@@ -922,7 +939,7 @@ def next_turn(state):
 
 
 def round_over(state):
-         """ round ends """
+    """ round ends """
     return state["phase"] == "round_over"
 
 
@@ -937,7 +954,7 @@ def end_round(state):
 
 
 def game_over(state):
-         """ game ends """
+    """ game ends """
     return state["hole"] > HOLES
 
 
@@ -958,19 +975,19 @@ YELLOW = (255, 230, 120)
 
 
 def _announce_turn(state):
-         """ displays whos turn it is """
+    """ displays whos turn it is """
     state["message"] = f"PLAYER {state['current'] + 1}'S TURN"
     state["message_t"] = 1.5
 
 
 def _over_pile(pos, center):
-""" checks whether a screen coordinate (such as the mouse cursor) is inside the rectangular area of a card pile.  """
+    """ checks whether a screen coordinate (such as the mouse cursor) is inside the rectangular area of a card pile.  """
     return (abs(pos[0] - center[0]) <= CARD_SIZE[0] / 2
             and abs(pos[1] - center[1]) <= CARD_SIZE[1] / 2)
 
 
 def new_game(state, sfx):
-""" new game """
+    """ new game """
     for player in state["players"]:
         player["score"] = 0
         player["total"] = 0
@@ -1023,7 +1040,7 @@ def reveal_card(state, card, sfx):
 
 
 def draw_from_deck(state, sfx):
-         """ draw from deck """
+    """ draw from deck """
     if state["phase"] != "draw":
         return None
     refill_deck(state)
@@ -1036,7 +1053,7 @@ def draw_from_deck(state, sfx):
 
 
 def draw_from_discard(state, sfx):
-         """ draw from discard """
+    """ draw from discard """
     if state["phase"] != "draw" or not state["discard"]:
         return None
     me = state["current"]
@@ -1052,6 +1069,116 @@ def draw_from_discard(state, sfx):
     return card
 
 
+def after_discard(state):
+    """Golf rule: after you throw away the card you drew from the deck you MAY
+    flip one of your face-down cards (optional). With a face-down card left,
+    the game waits in the "flip" phase for a flip or a skip. With none left,
+    the turn just ends."""
+    grid = state["players"][state["current"]]["grid_occ"]
+    if any(c is not None and not c["face_up"] for c in grid):
+        state["phase"] = "flip"
+    else:
+        next_turn(state)
+
+
+def flip_after_discard(state, card, sfx):
+    """Flip phase: turn one of the current player's face-down cards,
+    then the turn ends. Returns True if a card was turned."""
+    if (state["phase"] != "flip" or card["owner"] != state["current"]
+            or card["zone"] != "grid" or card["face_up"]
+            or card["flipping"]):
+        return False
+    flip_card(card, sfx)
+    next_turn(state)
+    return True
+
+
+def skip_flip(state):
+    """Flip phase: choose NOT to flip anything. The turn just ends.
+    Returns True if the flip was skipped."""
+    if state["phase"] != "flip":
+        return False
+    next_turn(state)
+    return True
+
+
+def knock(state, sfx):
+    """Instead of drawing, end the hole. Everyone else gets one last turn.
+    Only allowed at the start of a turn, and only if nobody has knocked."""
+    if state["phase"] != "draw" or state["ender"] is not None:
+        return False
+    knocker = state["current"]
+    state["ender"] = knocker
+    play(sfx, "shove")
+    next_turn(state)
+    if state["phase"] != "round_over":
+        state["message"] = f"PLAYER {knocker + 1} KNOCKED! LAST TURN"
+        state["message_t"] = 2.5
+    return True
+
+
+def action_button(state):
+    """(rect, label) of the button next to the current player, or None.
+    KNOCK at the start of a turn, SKIP while choosing whether to flip."""
+    if state["phase"] == "draw" and state["ender"] is None:
+        label = "KNOCK"
+    elif state["phase"] == "flip":
+        label = "SKIP"
+    else:
+        return None
+    rect = pygame.Rect(0, 0, 84, 32)
+    if state["current"] == 0:
+        rect.center = (593, 545)
+    else:
+        rect.center = (407, 245)
+    return rect, label
+
+
+def draw_action_button(screen, font, state):
+    """Draw the KNOCK / SKIP button when there is one."""
+    button = action_button(state)
+    if button is None:
+        return
+    rect, text = button
+    pygame.draw.rect(screen, (150, 60, 50), rect, border_radius=8)
+    pygame.draw.rect(screen, TEXT_COLOR, rect, 2, border_radius=8)
+    label = font.render(text, True, TEXT_COLOR)
+    screen.blit(label, label.get_rect(center=rect.center))
+
+
+HELP_LINES = [
+    ("HOW TO PLAY GOLF", YELLOW),
+    ("Lowest score after 9 holes wins.", TEXT_COLOR),
+    ("", TEXT_COLOR),
+    ("On your turn, do ONE of these:", YELLOW),
+    ("1.  Click the DISCARD pile: swap that card into your grid", TEXT_COLOR),
+    ("2.  Click the DECK: swap the card in, OR discard it", TEXT_COLOR),
+    ("     (then you MAY flip a face-down card, or SKIP)", TEXT_COLOR),
+    ("3.  KNOCK (K): end the hole. Opponent gets one last turn", TEXT_COLOR),
+    ("", TEXT_COLOR),
+    ("The hole also ends when all 4 of your cards are face up.", TEXT_COLOR),
+    ("", TEXT_COLOR),
+    ("Ace 1  |  2 = -2  |  3-10 face value  |  J, Q 10  |  K 0", TEXT_COLOR),
+    ("Same rank in a column = 0 points for that column.", TEXT_COLOR),
+    ("", TEXT_COLOR),
+    ("Click or press any key to start  (H shows this again)", YELLOW),
+]
+
+
+def draw_help(screen, font):
+    """The short how-to-play panel."""
+    panel = pygame.Surface((700, 28 + 28 * len(HELP_LINES)), pygame.SRCALPHA)
+    panel.fill((10, 40, 25, 240))
+    pygame.draw.rect(panel, TEXT_COLOR, panel.get_rect(), 2, border_radius=10)
+    y = 16
+    for text, color in HELP_LINES:
+        if text:
+            panel.blit(font.render(text, True, color), (28, y))
+        y += 28
+    screen.blit(panel, panel.get_rect(
+        center=(WINDOW_SIZE[0] // 2, WINDOW_SIZE[1] // 2)))
+
+
 def golf_press(state, pos, sfx):
     """What a left click means in the current phase."""
     phase = state["phase"]
@@ -1063,10 +1190,21 @@ def golf_press(state, pos, sfx):
         if picked is not None:
             reveal_card(state, picked, sfx)
     elif phase == "draw":
-        if _over_pile(pos, DECK_POS):
+        button = action_button(state)
+        if button is not None and button[0].collidepoint(pos):
+            knock(state, sfx)
+        elif _over_pile(pos, DECK_POS):
             draw_from_deck(state, sfx)
         elif _over_pile(pos, DISCARD_POS):
             draw_from_discard(state, sfx)
+    elif phase == "flip":
+        button = action_button(state)
+        if button is not None and button[0].collidepoint(pos):
+            skip_flip(state)
+        else:
+            picked = top_card_at(state["cards"], pos, owner=me)
+            if picked is not None:
+                flip_after_discard(state, picked, sfx)
     elif phase == "place":
         picked = top_card_at(state["cards"], pos, owner=me)
         if picked is not None and picked["zone"] == "hand":
@@ -1074,9 +1212,11 @@ def golf_press(state, pos, sfx):
 
 
 def golf_space(state, sfx):
-""" checks the current stage of the game in the state dictionary and triggers the matching action along with its sound effect (sfx). """
+    """ checks the current stage of the game in the state dictionary and triggers the matching action along with its sound effect (sfx). """
     if state["phase"] == "draw":
         draw_from_deck(state, sfx)
+    elif state["phase"] == "flip":
+        skip_flip(state)           # SPACE = do not flip, end the turn
     elif state["phase"] == "scored":
         continue_after_hole(state, sfx)
 
@@ -1092,7 +1232,7 @@ def finish_hole(state, sfx):
 
 
 def continue_after_hole(state, sfx):
-""" advances the Golf card game after a round (or "hole") ends """
+    """ advances the Golf card game after a round (or "hole") ends """
     state["queue"] = []
     if game_over(state):
         new_game(state, sfx)
@@ -1116,6 +1256,8 @@ def golf_hud_lines(state):
     elif phase == "draw":
         lines.append((f"PLAYER {me + 1}: DRAW A CARD", YELLOW))
         lines.append(("click the deck or the discard", TEXT_COLOR))
+        if state["ender"] is None:
+            lines.append(("or KNOCK to end the hole", TEXT_COLOR))
     elif phase == "place":
         lines.append((f"PLAYER {me + 1}: PLACE YOUR CARD", YELLOW))
         if state["drawn_from"] == "deck":
@@ -1123,6 +1265,10 @@ def golf_hud_lines(state):
             lines.append(("or on the discard to throw it away", TEXT_COLOR))
         else:
             lines.append(("drop it on a grid card (must swap)", TEXT_COLOR))
+    elif phase == "flip":
+        lines.append((f"PLAYER {me + 1}: FLIP A CARD (OPTIONAL)", YELLOW))
+        lines.append(("click a face-down card to flip it,", TEXT_COLOR))
+        lines.append(("or SKIP (button / SPACE) to end your turn", TEXT_COLOR))
     elif phase == "scored":
         scores = "  ".join(f"P{i + 1}: {p['score']}"
                            for i, p in enumerate(state["players"]))
@@ -1134,14 +1280,14 @@ def golf_hud_lines(state):
             lines.append(("click or SPACE: play again", TEXT_COLOR))
         else:
             lines.append(("click or SPACE: next hole", TEXT_COLOR))
-    if state["ender"] is not None and phase in ("draw", "place"):
+    if state["ender"] is not None and phase in ("draw", "place", "flip"):
         lines.append((f"PLAYER {state['ender'] + 1} IS DONE: LAST TURN",
                       (255, 170, 130)))
     return lines
 
 
 def draw_golf_hud(screen, font, lines):
-""" draws a vertical, right-aligned heads-up display (HUD) in the top-right corner of a Pygame window """
+    """ draws a vertical, right-aligned heads-up display (HUD) in the top-right corner of a Pygame window """
     y = 10
     for text, color in lines:
         surf = font.render(text, True, color)
@@ -1178,7 +1324,7 @@ _resting_shadow = None     # built once, shared by every resting card
 
 
 def get_resting_shadow():
-""" shadow for graphics """
+    """ shadow for graphics """
     global _resting_shadow
     if _resting_shadow is None:
         w, h = CARD_SIZE

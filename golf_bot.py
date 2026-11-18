@@ -64,8 +64,11 @@ class GolfBot:
     # take_gain: how much a discard card must help to take it over the deck
     # keep_gain: how much a deck card must help to keep it over discarding
     # mistakes:  chance per move of a random choice
-    LEVELS = {"easy":   {"take_gain": 4.0, "keep_gain": 0.0, "mistakes": 0.3},
-              "normal": {"take_gain": 2.5, "keep_gain": 0.5, "mistakes": 0.0}}
+    # knock_at:  knock when the estimated grid score is this low (None = never)
+    LEVELS = {"easy":   {"take_gain": 4.0, "keep_gain": 0.0, "mistakes": 0.3,
+                         "knock_at": None},
+              "normal": {"take_gain": 2.5, "keep_gain": 0.5, "mistakes": 0.0,
+                         "knock_at": 4.0}}
 
     def __init__(self, seat, level="normal", think_time=(0.6, 1.2),
                  auto_continue=False, rng=None):
@@ -79,7 +82,7 @@ class GolfBot:
 
     def update(self, state, dt, sfx):
         """Call once per frame, after input and before g.update."""
-        if not state.get("rules_on"):
+        if not state.get("rules_on") or state.get("help_on"):
             return
         phase = state["phase"]
 
@@ -110,6 +113,8 @@ class GolfBot:
             self._draw(state, sfx)
         elif phase == "place":
             self._place(state)
+        elif phase == "flip":
+            self._flip(state, sfx)
 
     def _reveal(self, state, sfx):
         grid = state["players"][self.seat]["grid_occ"]
@@ -119,6 +124,11 @@ class GolfBot:
 
     def _draw(self, state, sfx):
         grid = state["players"][self.seat]["grid_occ"]
+        knock_at = self.cfg["knock_at"]
+        if (knock_at is not None and state["ender"] is None
+                and estimate_grid(grid) <= knock_at):
+            g.knock(state, sfx)
+            return
         take = False
         if state["discard"]:
             _, gain = best_slot(grid, state["discard"][-1])
@@ -129,6 +139,16 @@ class GolfBot:
             g.draw_from_discard(state, sfx)
         elif g.draw_from_deck(state, sfx) is None and state["discard"]:
             g.draw_from_discard(state, sfx)
+
+    def _flip(self, state, sfx):
+        """After discarding a deck card the flip is optional. This simple bot
+        always takes it and flips a random face-down card."""
+        grid = state["players"][self.seat]["grid_occ"]
+        hidden = [c for c in grid if c is not None and not c["face_up"]]
+        if hidden:
+            g.flip_after_discard(state, self.rng.choice(hidden), sfx)
+        else:
+            g.skip_flip(state)
 
     def _place(self, state):
         player = state["players"][self.seat]
@@ -151,7 +171,7 @@ class GolfBot:
 
 
 def filter_events(events, state, bot_seats):
-    """Ignore clicks and SPACE while it is a bot's turn."""
+    """Ignore clicks, SPACE and K (knock) while it is a bot's turn."""
     if (not state.get("rules_on") or state["phase"] == "scored"
             or state["current"] not in bot_seats):
         return events
@@ -159,7 +179,8 @@ def filter_events(events, state, bot_seats):
     for event in events:
         if event.type == pygame.MOUSEBUTTONDOWN:
             continue
-        if event.type == pygame.KEYDOWN and event.key == pygame.K_SPACE:
+        if (event.type == pygame.KEYDOWN
+                and event.key in (pygame.K_SPACE, pygame.K_k)):
             continue
         kept.append(event)
     return kept
@@ -192,6 +213,7 @@ def main(frames=None, bot_seats=(1,), level="normal"):
     state = g.make_state(g.NUM_PLAYERS)
     state["sfx"] = sfx
     state["rules_on"] = True
+    state["help_on"] = not both      # how-to-play on launch (not bot vs bot)
     g.reset_table(state, sfx)
     bots = [GolfBot(seat, level, auto_continue=both) for seat in bot_seats]
 
