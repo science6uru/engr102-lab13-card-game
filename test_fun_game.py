@@ -63,7 +63,7 @@ class Stage1CardsAsData(unittest.TestCase):
         b = g.make_card("clubs", "2")
         a["pos"][0] = 5                       # change A's pos IN PLACE
         self.assertEqual(b["pos"], list(g.DECK_POS))
-        self.assertEqual(g.DECK_POS, (430, 330))
+        self.assertEqual(g.DECK_POS, (460, 330))
 
     def test_1_4_slot_layout_fits_and_does_not_overlap(self):
         """Every grid/hand slot, deck and discard: inside the window,

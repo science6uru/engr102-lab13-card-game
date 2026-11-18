@@ -13,18 +13,19 @@ RANKS = ["ace", "2", "3", "4", "5", "6", "7", "8", "9", "10",
          "jack", "queen", "king"]
 
 # deck and discard are shared (not per-plauyer), in the middle of the table
-DECK_POS    = (430, 330)
-DISCARD_POS = (570, 330)
+DECK_POS    = (460, 330)
+DISCARD_POS = (600, 330)
 
-# one list of 4 grid slots PER PLAYER (player 0 = bottom, player 1 = top)
+# anti-diagonal layout (issue #13): player 1 owns the top-left corner,
+# player 0 the bottom-right; piles stay in the middle where they cross.
 # slots 0,1 = top row of a grid, 2,3 = bottom row (Golf columns: (0,2), (1,3))
 PLAYER_GRID_SLOTS = [
-    [(440, 460), (560, 460), (440, 590), (560, 590)],   # player 0
-    [(440, 70),  (560, 70),  (440, 200), (560, 200)]]   # player 1
+    [(700, 415), (810, 415), (700, 550), (810, 550)],   # player 0
+    [(190, 110), (300, 110), (190, 245), (300, 245)]]   # player 1
 
 # one list of hand slots PER PLAYER (Golf needs one "held card" spot each)
-PLAYER_HAND_SLOTS = [[(760, 525)],    # player 0
-                     [(760, 135)]]    # player 1
+PLAYER_HAND_SLOTS = [[(500, 482)],    # player 0
+                     [(500, 178)]]    # player 1
 
 
 def make_card(suit, rank, zone="deck", pos=DECK_POS, face_up=False):
@@ -330,7 +331,10 @@ def draw_table(screen, font, current=None):
                       + PLAYER_GRID_SLOTS[p][2][1]) // 2
         label = font.render(f"PLAYER {p + 1}", True,
                             ACTIVE_GREEN if p == current else TEXT_COLOR)
-        screen.blit(label, label.get_rect(midright=(410, grid_mid_y)))
+        if p == 0:    # bottom-right grid: label sits on its left
+            screen.blit(label, label.get_rect(midright=(635, grid_mid_y)))
+        else:         # top-left grid: label sits on its right
+            screen.blit(label, label.get_rect(midleft=(365, grid_mid_y)))
 
     for center in (DECK_POS, DISCARD_POS):
         pile_rect = pygame.Rect((0, 0), CARD_SIZE)
