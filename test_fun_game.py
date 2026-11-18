@@ -386,6 +386,7 @@ class Stage7FlippingAndClicking(unittest.TestCase):
         c = placed("hearts", "queen", face_up=True)
         g.flip_card(c, {})
         self.assertFalse(c["face_up"])
+        g.update_card(c, g.FLIP_DURATION + 0.01, (0, 0), {})   # spin ends
         g.flip_card(c, {})
         self.assertTrue(c["face_up"])
 
@@ -1026,6 +1027,163 @@ class Stage11Wiring(unittest.TestCase):
         lines = [text for text, _ in g.golf_hud_lines(s)]
         self.assertIn("PLAYER 1: DRAW A CARD", lines)
         self.assertIn("PLAYER 2 IS DONE: LAST TURN", lines)
+
+
+class Stage12Polish(unittest.TestCase):
+    """Issue #21 - game juice: update_polish, the flip spin, shadows."""
+
+    def spin_done(self, c):
+        """Advance one card until its flip spin has finished."""
+        g.update_card(c, g.FLIP_DURATION + 0.01, (0, 0), {})
+
+    def test_12_0_make_card_has_the_announced_keys(self):
+        c = g.make_card("hearts", "queen")
+        for key_name in ("bend", "tilt", "lift", "wobble_t", "flip_t"):
+            self.assertEqual(c[key_name], 0.0)
+        self.assertEqual(c["vel"], [0.0, 0.0])
+        self.assertFalse(c["flipping"])
+
+    def test_12_1_polish_never_changes_rules_state(self):
+        """pos, zone, slot and face_up stay put; only tilt moves."""
+        c = placed("hearts", "queen", zone="grid", slot=2, owner=1,
+                   pos=(300, 200), face_up=True)
+        before = (list(c["pos"]), c["zone"], c["slot"], c["face_up"],
+                  c["owner"])
+        prev = [c["pos"][0] - 12, c["pos"][1]]     # it "moved" 12 px
+        for _ in range(60):
+            g.update_polish(c, 1 / 60, prev)
+        self.assertEqual((list(c["pos"]), c["zone"], c["slot"],
+                          c["face_up"], c["owner"]), before)
+        self.assertNotEqual(c["tilt"], 0.0)
+
+    def test_12_2_flip_while_spinning_does_nothing(self):
+        c = placed("hearts", "queen", face_up=False)
+        g.flip_card(c, {})
+        self.assertTrue(c["face_up"])
+        self.assertTrue(c["flipping"])
+        g.flip_card(c, {})                          # mid-spin: ignored
+        self.assertTrue(c["face_up"])
+        self.spin_done(c)
+        self.assertFalse(c["flipping"])
+        g.flip_card(c, {})                          # spin over: works
+        self.assertFalse(c["face_up"])
+
+    def test_12_3_the_picture_swaps_at_the_halfway_point(self):
+        face = pygame.Surface((7, 7))
+        back = pygame.Surface((9, 9))
+        faces = {("hearts", "queen"): face}
+        c = placed("hearts", "queen", face_up=False)
+        g.flip_card(c, {})                          # now face up
+        self.assertIs(g.current_texture(c, faces, back), back)   # old side
+        c["flip_t"] = g.FLIP_DURATION * 0.75
+        self.assertIs(g.current_texture(c, faces, back), face)   # new side
+        self.spin_done(c)
+        self.assertIs(g.current_texture(c, faces, back), face)
+
+    def test_12_4_the_rules_do_not_wait_for_the_spin(self):
+        """Scoring reads face_up the instant the card is flipped."""
+        c = placed("hearts", "king", zone="grid", slot=0, face_up=False)
+        g.flip_card(c, {})
+        self.assertTrue(c["face_up"])
+        self.assertTrue(c["flipping"])
+
+    def test_12_5_lift_target_is_higher_when_held_or_flipping(self):
+        rest = placed("hearts", "queen")
+        held = placed("hearts", "queen")
+        held["dragging"] = True
+        flip = placed("hearts", "queen")
+        g.flip_card(flip, {})
+        flip["flip_t"] = g.FLIP_DURATION / 2        # the pop is at its peak
+        self.assertEqual(g.lift_target(rest), 0.0)
+        self.assertGreater(g.lift_target(held), 0.0)
+        self.assertGreater(g.lift_target(flip), 0.0)
+
+    def test_12_6_dragging_sideways_leans_the_way_it_moves(self):
+        for direction in (1, -1):
+            c = placed("hearts", "queen", pos=(500, 300))
+            g.begin_drag(c, (500, 300), {})
+            for i in range(30):                      # mouse sweeps sideways
+                g.update_card(c, 1 / 60, (500 + direction * 12 * i, 300), {})
+            self.assertGreater(c["tilt"] * direction, 0.5)
+            self.assertGreater(c["bend"] * direction, 0.0)
+            self.assertGreater(c["lift"], 10.0)
+
+    def test_12_7_a_landing_card_wobbles_then_settles(self):
+        c = placed("hearts", "queen", zone="grid", slot=0, owner=0,
+                   pos=(400, 300))
+        g.send_card(c, (430, 300), "grid", 0, owner=0)
+        for _ in range(240):
+            g.update_card(c, 1 / 120, (0, 0), {})
+            if c["motion"] is None:
+                break
+        self.assertGreater(c["wobble_t"], 0.0)       # it just landed
+        for _ in range(120 * 2):                     # two quiet seconds
+            g.update_card(c, 1 / 120, (0, 0), {})
+        self.assertEqual(c["wobble_t"], 0.0)
+        self.assertAlmostEqual(c["tilt"], 0.0, places=1)
+        self.assertAlmostEqual(c["lift"], 0.0, places=1)
+        self.assertEqual(list(c["pos"]), [430.0, 300.0])
+
+    def test_12_8_polish_is_frame_rate_independent(self):
+        results = []
+        for fps in (30, 60, 240):
+            c = placed("hearts", "queen")
+            c["dragging"] = True                     # lift target = 34
+            for _ in range(fps // 2):                # half a second
+                g.update_polish(c, 1 / fps, list(c["pos"]))
+            results.append(c["lift"])
+        self.assertAlmostEqual(results[0], results[1], delta=0.5)
+        self.assertAlmostEqual(results[1], results[2], delta=0.5)
+
+    def test_12_9_the_resting_shadow_is_built_once(self):
+        self.assertIs(g.get_resting_shadow(), g.get_resting_shadow())
+
+    def test_12_10_every_card_state_can_be_drawn(self):
+        """draw_card must not crash resting, flipping, dragged or tilted."""
+        screen = pygame.Surface(g.WINDOW_SIZE)
+        face = pygame.Surface(g.CARD_SIZE, pygame.SRCALPHA)
+        back = pygame.Surface(g.CARD_SIZE, pygame.SRCALPHA)
+        faces = {("hearts", "queen"): face}
+        for setup in ("rest", "flip", "drag", "wobble", "deal"):
+            c = placed("hearts", "queen", pos=(300, 300), face_up=False)
+            if setup == "flip":
+                g.flip_card(c, {})
+                c["flip_t"] = g.FLIP_DURATION * 0.5   # exactly edge-on
+            elif setup == "drag":
+                c["dragging"] = True
+                c["bend"], c["tilt"], c["lift"] = 14.0, -9.0, 34.0
+            elif setup == "wobble":
+                c["wobble_t"], c["tilt"] = g.WOBBLE_TIME, 5.0
+            elif setup == "deal":
+                c["motion"], c["lift"] = "deal", 80.0
+            g.draw_card(screen, c, faces, back)
+
+    def test_12_11_render_draws_flipping_cards_last(self):
+        """A spinning card is never hidden under a resting neighbour."""
+        pygame.font.init()
+        s = g.make_state(2)
+        s["sfx"] = {}
+        a = placed("clubs", "2", zone="grid", slot=0, owner=0, pos=(300, 300))
+        b = placed("hearts", "queen", zone="grid", slot=1, owner=0,
+                   pos=(310, 300))
+        s["cards"] = [b, a]                 # a is later, so normally on top
+        b["flipping"] = True                # ...but b is spinning
+        order = []
+        original = g.draw_card
+        g.draw_card = lambda screen, card, faces, back: order.append(card)
+        try:
+            g.render(pygame.Surface(g.WINDOW_SIZE), s,
+                     pygame.font.Font(None, 20), {}, None)
+        finally:
+            g.draw_card = original
+        self.assertEqual(order, [a, b])
+
+    def test_12_12_no_debug_stats_on_screen(self):
+        """The fps / frame-time block is gone from the state and the HUD."""
+        self.assertNotIn("hud_lines", g.make_state(2))
+        pygame.font.init()
+        screen = pygame.Surface(g.WINDOW_SIZE)
+        g.draw_hud(screen, pygame.font.Font(None, 20), None)   # no 'lines'
 
 
 if __name__ == "__main__":
