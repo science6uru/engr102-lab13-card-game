@@ -42,7 +42,11 @@ def make_card(suit, rank, zone="deck", pos=DECK_POS, face_up=False):
             "drag_offset": (0.0, 0.0),   # where on the card the mouse grabbed it
             "press_pos": (0.0, 0.0),     # where the mouse was on click
             # Stage 7 (issue #14): click vs drag
-            "pickup_flip": False}        # did begin_drag already flip it?
+            "pickup_flip": False,       # did begin_drag already flip it?
+            # Stage 9 (issue #17): a dealt card's flight through the air
+            "t": 0.0,                    # seconds into a "deal" flight
+            "start": [0.0, 0.0],         # where the flight began
+            "arc": 0.0}                  # how high the flight arcs
     return card
 
 
@@ -413,10 +417,32 @@ def handle_input(events, state, sfx, mouse_pos):
 
 
 def update(state, dt, mouse_pos, sfx):
-    """Stage 6: every dragged card follows the mouse. Stages 8-9 add more."""
+    """
+    One step of the world (Stage 9):
+    1. count the deal queue down and deal what is due,
+    2. move every card (update_card handles dragging, gliding, dealing),
+    3. count the on-screen message down.
+    update does NOT call update_drag itself any more: update_motion does,
+    otherwise a dragged card would move twice per frame.
+    """
+    # queue entries are tuples (they cannot be edited), so build a NEW list
+    waiting = []
+    for delay, player, slot in state["queue"]:
+        delay -= dt
+        if delay <= 0:
+            deal_to_grid(state, player, slot, sfx)
+        else:
+            waiting.append((delay, player, slot))
+    state["queue"] = waiting
+
     for card in state["cards"]:
-        if card["dragging"]:
-            update_drag(card, mouse_pos, dt)
+        update_card(card, dt, mouse_pos, sfx)
+
+    if state["message_t"] > 0:
+        state["message_t"] -= dt
+        if state["message_t"] <= 0:
+            state["message"] = None
+            state["message_t"] = 0.0
 
 
 def _pacing_lines(frame_times, vsynced, refresh_hz, using_timer):
@@ -449,6 +475,7 @@ def main(frames=None):
 
     state = make_state(NUM_PLAYERS)
     state["sfx"] = sfx
+    reset_table(state, sfx)          # starts the opening deal (Stage 9)
 
     clock = pygame.time.Clock()
     using_timer = not vsynced
@@ -591,11 +618,19 @@ def flip_card(card, sfx):
 
 def release_card(card, mouse_pos, state):
     """
-    Let go of a dragged card. First part only (Stage 8 adds placing,
-    swapping and discarding):
-    moved less than CLICK_DIST since the press = a CLICK, so flip the card,
-    unless begin_drag already flipped it (pickup_flip), then do NOT flip
-    it back.
+    Let go of a dragged card. A DECISION function: it decides and calls
+    send_card, it never moves pixels (Stage 9 does that).
+
+    Click check (Stage 7): moved less than CLICK_DIST since the press = a
+    CLICK, so flip the card, unless begin_drag already flipped it
+    (pickup_flip), then do NOT flip it back. Then stop.
+
+    Otherwise (Stage 8), in this order:
+      a) mouse within SNAP_DIST of DISCARD_POS    -> discard it
+      b) nearest slot of the card's OWN grid within SNAP_DIST:
+           its own slot -> settle back, empty -> place,
+           another card there -> swap (old card to the discard, face up)
+      c) else -> go home (back to its hand slot or grid slot)
     """
     card["dragging"] = False
     revealed_on_pickup = card["pickup_flip"]
@@ -603,8 +638,186 @@ def release_card(card, mouse_pos, state):
 
     moved = math.hypot(mouse_pos[0] - card["press_pos"][0],
                        mouse_pos[1] - card["press_pos"][1])
-    if moved < CLICK_DIST and not revealed_on_pickup:
-        flip_card(card, state["sfx"])
+    if moved < CLICK_DIST:
+        if not revealed_on_pickup:
+            flip_card(card, state["sfx"])
+        return                      # a click is not a drop
+
+    owner = card["owner"]
+    player = state["players"][owner]
+    old_zone, old_slot = card["zone"], card["slot"]   # where it came from
+    if old_zone == "hand":
+        old_occ = player["hand_occ"]
+        home = PLAYER_HAND_SLOTS[owner][old_slot]
+    else:
+        old_occ = player["grid_occ"]
+        home = PLAYER_GRID_SLOTS[owner][old_slot]
+
+    # a) discard
+    if _distance(mouse_pos, DISCARD_POS) <= SNAP_DIST:
+        old_occ[old_slot] = None
+        send_card(card, DISCARD_POS, "discard", None, face_up=True)
+        return
+
+    # b) nearest slot of the card's OWN player's grid
+    slots = PLAYER_GRID_SLOTS[owner]
+    distances = [_distance(mouse_pos, slot_pos) for slot_pos in slots]
+    nearest = distances.index(min(distances))
+    if distances[nearest] <= SNAP_DIST:
+        if old_zone == "grid" and nearest == old_slot:
+            # dropped on its own slot: settle back in it
+            send_card(card, slots[nearest], "grid", nearest, owner=owner)
+            return
+        occupant = player["grid_occ"][nearest]
+        old_occ[old_slot] = None                  # the card left its spot
+        if occupant is not None:                  # swap: old card out
+            send_card(occupant, DISCARD_POS, "discard", None, face_up=True)
+        player["grid_occ"][nearest] = card        # the card takes the slot
+        send_card(card, slots[nearest], "grid", nearest, owner=owner)
+        return
+
+    # c) nowhere useful: go home (the occupancy lists stay as they were)
+    send_card(card, home, old_zone, old_slot, owner=owner)
+
+
+# ----------------------------------------------------------------------
+# Stage 8 - PLACING, SWAPPING, DISCARDING (issue #16)
+# ----------------------------------------------------------------------
+SNAP_DIST = 80   # px: how close the mouse must be to a slot or the discard
+
+
+def _distance(a, b):
+    """Straight-line distance between two (x, y) points."""
+    return math.hypot(a[0] - b[0], a[1] - b[1])
+
+
+def send_card(card, target, zone, slot, face_up=None, owner=None):
+    """
+    Perform a decision: the card will GLIDE to target (Stage 9 moves it).
+    zone, slot, face_up and owner are updated with reset_card_zone and NO
+    pos, so the card is not teleported.
+    TRAP: reset_card_zone sets owner to whatever it is given (None by
+    default), so for "hand" and "grid" destinations the caller must pass
+    owner=, or the card loses its owner.
+    """
+    reset_card_zone(card, zone, slot=slot, face_up=face_up, owner=owner)
+    card["motion"] = "glide"
+    card["target"] = list(target)
+
+
+# ----------------------------------------------------------------------
+# Stage 9 - MOVEMENT OVER TIME: GLIDING AND DEALING (issue #17)
+# ----------------------------------------------------------------------
+GLIDE = 12           # how fast a gliding card closes the distance
+DEAL_TIME = 0.55     # seconds a dealt card takes to fly
+DEAL_ARC = 130       # px: how high the flight arcs above the straight line
+ARRIVE_DIST = 2      # px: this close to the target = arrived
+
+
+def update_motion(card, dt, mouse_pos, sfx):
+    """
+    Advance ONE card by dt seconds:
+      dragging       -> update_drag (Stage 6)
+      "glide"        -> ease toward target; within ARRIVE_DIST it snaps
+                        there, motion = None, and "place" plays
+      "deal"         -> a DEAL_TIME flight with smoothstep easing and an arc
+    """
+    if card["dragging"]:
+        update_drag(card, mouse_pos, dt)
+    elif card["motion"] == "glide":
+        k = blend(GLIDE, dt)
+        card["pos"][0] += (card["target"][0] - card["pos"][0]) * k
+        card["pos"][1] += (card["target"][1] - card["pos"][1]) * k
+        if _distance(card["pos"], card["target"]) < ARRIVE_DIST:
+            card["pos"] = list(card["target"])
+            card["motion"] = None
+            play(sfx, "place")
+    elif card["motion"] == "deal":
+        card["t"] += dt
+        p = min(card["t"] / DEAL_TIME, 1)     # clamp: never overshoot
+        ease = p * p * (3 - 2 * p)
+        start, target = card["start"], card["target"]
+        card["pos"][0] = start[0] + (target[0] - start[0]) * ease
+        card["pos"][1] = (start[1] + (target[1] - start[1]) * ease
+                          - card["arc"] * math.sin(math.pi * p))
+        if p >= 1:
+            card["pos"] = list(target)
+            card["motion"] = None
+            play(sfx, "place")
+
+
+def update_card(card, dt, mouse_pos, sfx):
+    """The per-card step. For now it just calls update_motion."""
+    update_motion(card, dt, mouse_pos, sfx)
+
+
+def _start_deal_flight(card, target):
+    """Start a "deal" flight from wherever the card is now to target."""
+    card["motion"] = "deal"
+    card["t"] = 0.0
+    card["start"] = list(card["pos"])
+    card["target"] = list(target)
+    card["arc"] = DEAL_ARC
+
+
+def deal_to_hand(state, player, sfx):
+    """
+    Golf wrapper: deal the top card into the player's hand and fly it
+    there. Sets state["message"] if the deck is empty or the hand is full.
+    Returns the card, or None.
+    """
+    if not state["deck"]:
+        state["message"] = "deck is empty!"
+        state["message_t"] = 1.5
+        return None
+    card = deal_card(state["deck"], state["players"][player]["hand_occ"])
+    if card is None:
+        state["message"] = "hand is full!"
+        state["message_t"] = 1.5
+        return None
+    # deal_card leaves owner = None, so set it now (keep face_up as is)
+    reset_card_zone(card, "hand", slot=card["slot"], owner=player)
+    _start_deal_flight(card, PLAYER_HAND_SLOTS[player][card["slot"]])
+    play(sfx, "fan")
+    return card
+
+
+def deal_to_grid(state, player, slot, sfx):
+    """
+    Opening deal: the top card goes FACE DOWN into that player's grid slot
+    and flies there. Returns the card, or None if the deck is empty.
+    """
+    if not state["deck"]:
+        state["message"] = "deck is empty!"
+        state["message_t"] = 1.5
+        return None
+    card = state["deck"].pop(0)
+    reset_card_zone(card, "grid", slot=slot, face_up=False, owner=player)
+    state["players"][player]["grid_occ"][slot] = card
+    _start_deal_flight(card, PLAYER_GRID_SLOTS[player][slot])
+    play(sfx, "fan")
+    return card
+
+
+def reset_table(state, sfx):
+    """
+    Redeal: new shuffled deck, both players' hands and grids emptied, and
+    one queue job (delay, player, slot) per grid slot, alternating players
+    like a real deal: delay = 0.2 + 0.18 * i.
+    """
+    deck = make_deck()
+    shuffle_deck(deck)
+    state["cards"] = deck               # every card (drawing order)
+    state["deck"] = list(deck)          # same cards, only the undealt ones
+    for player in state["players"]:
+        player["grid_occ"] = [None] * len(player["grid_occ"])
+        player["hand_occ"] = [None] * len(player["hand_occ"])
+    n = len(state["players"])
+    state["queue"] = [(0.2 + 0.18 * i, i % n, i // n)
+                      for i in range(n * len(PLAYER_GRID_SLOTS[0]))]
+    state["message"] = None
+    state["message_t"] = 0.0
+    play(sfx, "shuffle")
 
 
 if __name__ == "__main__":
