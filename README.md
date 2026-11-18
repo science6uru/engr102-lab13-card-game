@@ -10,7 +10,7 @@
 ```bash
 git clone https://github.com/science6uru/engr102-lab13-card-game.git
 cd engr102-lab13-card-game
-uv sync          # creates .venv and installs pygame
+uv sync
 ```
 
 No uv? Any Python 3.12+ works:
