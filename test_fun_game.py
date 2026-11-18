@@ -260,5 +260,27 @@ class Stage3Loading(unittest.TestCase):
         g.play({"place": []}, "slide")
 
 
+class Stage4Drawing(unittest.TestCase):
+    """Issue #4 - drawing a still table."""
+
+    def test_4_1_card_rect_size_and_center(self):
+        card = g.make_card("hearts", "queen")
+        card["pos"] = [123.4, 77.7]
+        rect = g.card_rect(card)
+        self.assertEqual(rect.size, g.CARD_SIZE)
+        self.assertEqual(rect.center, (123, 78))
+
+    def test_4_2_current_texture_face_or_back(self):
+        face = pygame.Surface((7, 7))    # dummy "face" surface
+        back = pygame.Surface((9, 9))    # dummy "back" surface
+        faces = {("hearts", "queen"): face}
+        card = g.make_card("hearts", "queen")
+
+        card["face_up"] = True
+        self.assertIs(g.current_texture(card, faces, back), face)
+        card["face_up"] = False
+        self.assertIs(g.current_texture(card, faces, back), back)
+
+
 if __name__ == "__main__":
     unittest.main()
