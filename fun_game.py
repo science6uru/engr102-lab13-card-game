@@ -7,13 +7,12 @@ import time
 import statistics
 import pygame
 
-# macOS: let the click that focuses the window also reach the game, instead
-# of being swallowed. (Must be set before pygame opens the window.)
 os.environ.setdefault("SDL_MOUSE_FOCUS_CLICKTHROUGH", "1")
 
 WINDOW_SIZE = (1000, 660)
 CARD_SIZE   = (90, 126)        # smaller so two grids fit on one screen
 NUM_PLAYERS = 2
+HOLES = 9                      # a full game is nine hands (Stage 11)
 SUITS = ["clubs", "diamonds", "hearts", "spades"]
 RANKS = ["ace", "2", "3", "4", "5", "6", "7", "8", "9", "10",
          "jack", "queen", "king"]
@@ -132,10 +131,20 @@ def make_state(num_players=NUM_PLAYERS):
     state = {"cards": [], "deck": [],
              "players": [{"grid_occ": [None] * len(PLAYER_GRID_SLOTS[i]),
                           "hand_occ": [None] * len(PLAYER_HAND_SLOTS[i]),
-                          "score": 0} for i in range(num_players)],
+                          "score": 0,      # this hole (Stage 11)
+                          "total": 0}      # running total over all holes
+                         for i in range(num_players)],
              "current": 0,
              "message": None, "message_t": 0.0,
-             "sfx": None, "queue": [], "hud_lines": []}
+             "sfx": None, "queue": [], "hud_lines": [],
+             # Stage 11 (issue #20): the Golf rules
+             "rules_on": False,   # True = Golf rules (main() turns them on)
+             "discard": [],        # the discard pile, top (newest) card LAST
+             "phase": "reveal",   # reveal, draw, place, round_over, scored
+             "hole": 1,           # which hole is being played (1..HOLES)
+             "ender": None,       # player who turned their last card up
+             "drawn_from": None,  # "deck" or "discard" during a turn
+             "revealed": [0] * num_players}   # flips done while revealing
     return state
 
 
@@ -294,25 +303,26 @@ def draw_card(screen, card, faces, back):
     screen.blit(current_texture(card, faces, back), card_rect(card))
 
 
-def draw_piles(screen, cards, faces, back):
+def draw_piles(screen, cards, faces, back, discard=None):
     """
     Deck: draw the top 3 cards still in zone "deck" face-down, each
         2 pixels higher than the last, so the pile looks thick.
-    Discard: draw the cards in zone "discard" face-up with a tiny
-        offset each, so the pile looks fanned.
+    Discard: draw the 3 NEWEST cards in zone "discard" face-up with a
+        tiny offset each, so the pile looks fanned. `discard` is the
+        state's discard list (oldest first, newest last); without it the
+        cards are taken in list order.
     """
-    top_3_in_discard = []
-    discard_parse_count = 0
     deck_parse_count = 0
+    in_discard = []
 
     for card in cards:
         if card["zone"] == "deck":
             deck_parse_count += 1
-        if card["zone"] == "discard":
-            discard_parse_count += 1
-            top_3_in_discard.append(card)
-        if discard_parse_count == 3:
-            break
+        elif card["zone"] == "discard":
+            in_discard.append(card)
+    if discard:
+        in_discard = list(discard)
+    top_3_in_discard = in_discard[-3:]
 
     # cards in deck: bottom layer first, top card drawn LAST (on top).
     # draw only as many layers as the pile actually has.
@@ -323,7 +333,7 @@ def draw_piles(screen, cards, faces, back):
 
     # cards in discard: centered on the card's own pos, offset per layer
     move_over = 0
-    for card in top_3_in_discard[::-1]:
+    for card in top_3_in_discard:           # oldest first, newest on top
         rect = card_rect(card)
         rect.move_ip(move_over, move_over)
         screen.blit(current_texture(card, faces, back), rect)
@@ -373,10 +383,18 @@ def render(screen, state, font, faces, back):
     a hand or grid of ANY player (cards drawn LAST appear ON TOP).
     """
     draw_table(screen, font, state["current"])
-    draw_piles(screen, state["cards"], faces, back)
+    draw_piles(screen, state["cards"], faces, back, state.get("discard"))
+    # resting cards first; dragged and gliding cards LAST so they are
+    # never hidden under a card that is standing still
+    moving = []
     for card in state["cards"]:
         if card["zone"] in ("hand", "grid"):
-            draw_card(screen, card, faces, back)
+            if card["dragging"] or card["motion"] is not None:
+                moving.append(card)
+            else:
+                draw_card(screen, card, faces, back)
+    for card in moving:
+        draw_card(screen, card, faces, back)
 
 
 # ----------------------------------------------------------------------
@@ -387,8 +405,8 @@ MAX_DT = 0.05    # clamp: a stalled frame must not teleport things
 
 def draw_hud(screen, font, message, lines):
     """Controls hint, stats block, and state["message"] if not empty."""
-    hint = font.render("Drag | Click flip | Space draw | Tab switch"
-                       " | R: redeal | Esc quit", True, TEXT_COLOR)
+    hint = font.render("Click deck/discard or SPACE to draw | Drag to place"
+                       " | R: new game | Esc quit", True, TEXT_COLOR)
     screen.blit(hint, (12, 10))
     y = 34
     for text, color in lines:
@@ -411,12 +429,15 @@ def next_player(state):
 def handle_input(events, state, sfx, mouse_pos):
     """
     Switchboard: send each event to the right function. False = quit.
-      ESC / window close -> quit        SPACE / click the deck -> deal
-      TAB -> next player                R -> redeal
+      ESC / window close -> quit        SPACE / click the deck -> draw
+      R -> new game                     TAB -> next player (free play only)
       left mouse down -> grab a card    left mouse up -> release it
+    With state["rules_on"] the Golf rules decide what a click or SPACE
+    means (golf_press, golf_space); this function still only dispatches.
     Mouse events use their OWN position (event.pos), because mouse_pos
     was read before the events and can be a frame behind the click.
     """
+    rules = state.get("rules_on", False)
     for event in events:
         if event.type == pygame.QUIT:
             return False
@@ -424,15 +445,24 @@ def handle_input(events, state, sfx, mouse_pos):
             if event.key == pygame.K_ESCAPE:
                 return False
             if event.key == pygame.K_SPACE:
-                deal_to_hand(state, state["current"], sfx)
+                if rules:
+                    golf_space(state, sfx)
+                else:
+                    deal_to_hand(state, state["current"], sfx)
             elif event.key == pygame.K_TAB:
-                next_player(state)
+                if not rules:             # Golf passes the turn by itself
+                    next_player(state)
             elif event.key == pygame.K_r:
                 state["queue"] = []
-                reset_table(state, sfx)
+                if rules:
+                    new_game(state, sfx)
+                else:
+                    reset_table(state, sfx)
         elif event.type == pygame.MOUSEBUTTONDOWN and event.button == 1:
             pos = getattr(event, "pos", mouse_pos)
-            if _distance(pos, DECK_POS) <= DEAL_PICK_DIST:
+            if rules:
+                golf_press(state, pos, sfx)
+            elif _distance(pos, DECK_POS) <= DEAL_PICK_DIST:
                 deal_to_hand(state, state["current"], sfx)
             else:
                 # only the current player can grab (owner filter)
@@ -475,6 +505,10 @@ def update(state, dt, mouse_pos, sfx):
         if state["message_t"] <= 0:
             state["message"] = None
             state["message_t"] = 0.0
+
+    # Stage 11: the last turn of a hole is done, so score it
+    if state.get("rules_on") and state["phase"] == "round_over":
+        finish_hole(state, sfx)
 
 
 def _pacing_lines(frame_times, vsynced, refresh_hz, using_timer):
@@ -525,6 +559,7 @@ def main(frames=None):
 
     state = make_state(NUM_PLAYERS)
     state["sfx"] = sfx
+    state["rules_on"] = True         # play real Golf (Stage 11)
     reset_table(state, sfx)          # starts the opening deal (Stage 9)
 
     clock = pygame.time.Clock()
@@ -555,9 +590,8 @@ def main(frames=None):
 
         # 4. render
         render(screen, state, font, faces, back)
-        turn_line = (f"PLAYER {state['current'] + 1}'S TURN", (255, 230, 120))
-        draw_hud(screen, font, state["message"],
-                 [turn_line] + state["hud_lines"])
+        draw_hud(screen, font, state["message"], state["hud_lines"])
+        draw_golf_hud(screen, font, golf_hud_lines(state))
 
         # 5. show
         pygame.display.flip()
@@ -688,8 +722,14 @@ def release_card(card, mouse_pos, state):
 
     moved = math.hypot(mouse_pos[0] - card["press_pos"][0],
                        mouse_pos[1] - card["press_pos"][1])
+    rules = state.get("rules_on", False)
     if moved < CLICK_DIST:
-        if not revealed_on_pickup:
+        if rules:
+            # Golf: clicking a held card never flips it. Put it back
+            # exactly in its slot so it is not left a few pixels off.
+            send_card(card, _home_pos(card), card["zone"], card["slot"],
+                      owner=card["owner"])
+        elif not revealed_on_pickup:
             flip_card(card, state["sfx"])
         return                      # a click is not a drop
 
@@ -705,8 +745,14 @@ def release_card(card, mouse_pos, state):
 
     # a) discard
     if _distance(mouse_pos, DISCARD_POS) <= SNAP_DIST:
+        if rules and not legal_move(state, card, ("discard", None)):
+            send_card(card, home, old_zone, old_slot, owner=owner)
+            return                  # the rules forbid it: go home
         old_occ[old_slot] = None
         send_card(card, DISCARD_POS, "discard", None, face_up=True)
+        _push_discard(state, card)
+        if rules:
+            next_turn(state)
         return
 
     # b) nearest slot of the card's OWN player's grid
@@ -718,12 +764,18 @@ def release_card(card, mouse_pos, state):
             # dropped on its own slot: settle back in it
             send_card(card, slots[nearest], "grid", nearest, owner=owner)
             return
+        if rules and not legal_move(state, card, ("grid", nearest)):
+            send_card(card, home, old_zone, old_slot, owner=owner)
+            return                  # the rules forbid it: go home
         occupant = player["grid_occ"][nearest]
         old_occ[old_slot] = None                  # the card left its spot
         if occupant is not None:                  # swap: old card out
             send_card(occupant, DISCARD_POS, "discard", None, face_up=True)
+            _push_discard(state, occupant)
         player["grid_occ"][nearest] = card        # the card takes the slot
         send_card(card, slots[nearest], "grid", nearest, owner=owner)
+        if rules:
+            next_turn(state)
         return
 
     # c) nowhere useful: go home (the occupancy lists stay as they were)
@@ -739,6 +791,17 @@ SNAP_DIST = 80   # px: how close the mouse must be to a slot or the discard
 def _distance(a, b):
     """Straight-line distance between two (x, y) points."""
     return math.hypot(a[0] - b[0], a[1] - b[1])
+
+
+def _push_discard(state, card):
+    """Put a card on top of the discard pile (the newest card is LAST)."""
+    state.setdefault("discard", []).append(card)
+
+
+def _home_pos(card):
+    """Screen position of the hand or grid slot the card belongs in."""
+    table = PLAYER_HAND_SLOTS if card["zone"] == "hand" else PLAYER_GRID_SLOTS
+    return table[card["owner"]][card["slot"]]
 
 
 def send_card(card, target, zone, slot, face_up=None, owner=None):
@@ -867,7 +930,348 @@ def reset_table(state, sfx):
                       for i in range(n * len(PLAYER_GRID_SLOTS[0]))]
     state["message"] = None
     state["message_t"] = 0.0
+    # Stage 11: every hole starts in the reveal phase, with an empty discard
+    # pile (start_discard turns the first card up once the reveal is done).
+    # The player whose turn is first rotates: hole 1 player 0, hole 2 player 1...
+    state["discard"] = []
+    state["phase"] = "reveal"
+    state["revealed"] = [0] * n
+    state["ender"] = None
+    state["drawn_from"] = None
+    state["current"] = (state["hole"] - 1) % n
     play(sfx, "shuffle")
+
+
+# ----------------------------------------------------------------------
+# Stage 11 - THE REAL GAME RULES: FOUR-CARD GOLF (issue #20)
+# ----------------------------------------------------------------------
+# Rules only CALL the earlier stages and read/write the state. They never
+# draw and never move pixels.
+CARD_VALUES = {"ace": 1, "2": -2, "jack": 10, "queen": 10, "king": 0}
+GRID_COLUMNS = ((0, 2), (1, 3))    # slots 0,1 = top row; 2,3 = bottom row
+
+
+def card_value(card):
+    """
+    Golf points of one card: Ace 1, Two -2, 3-10 face value,
+    Jack and Queen 10, King 0.
+    """
+    rank = card["rank"]
+    if rank in CARD_VALUES:
+        return CARD_VALUES[rank]
+    return int(rank)                 # "3" ... "10"
+
+
+def score_grid(cards):
+    """
+    Add up one player's grid (their grid_occ list; None = empty slot, 0
+    points). A pair of equal ranks in the same column scores 0 for that
+    column. Counts every card, face up or down: at the end of a hole all
+    cards are turned over before scoring.
+    """
+    total = 0
+    for top, bottom in GRID_COLUMNS:
+        upper, lower = cards[top], cards[bottom]
+        if (upper is not None and lower is not None
+                and upper["rank"] == lower["rank"]):
+            continue                 # a pair cancels the whole column
+        for c in (upper, lower):
+            if c is not None:
+                total += card_value(c)
+    return total
+
+
+def legal_move(state, card, target):
+    """
+    May this card be dropped on target = (zone, slot)?
+    Only the current player's held card, and only in the "place" phase.
+      ("grid", slot)    any slot of the player's own grid (a swap)
+      ("discard", None) only if the card came from the DECK; a card taken
+                        from the discard pile must be swapped in
+      ("hand", None)    going home is always fine
+    Release_card sends the card home when this says False.
+    """
+    if state["phase"] != "place":
+        return False
+    if card["owner"] != state["current"] or card["zone"] != "hand":
+        return False
+    zone, slot = target
+    if zone == "grid":
+        return slot in range(len(PLAYER_GRID_SLOTS[card["owner"]]))
+    if zone == "discard":
+        return state["drawn_from"] == "deck"
+    return zone == "hand"
+
+
+def _all_face_up(cards):
+    """True if every slot holds a face-up card."""
+    return all(c is not None and c["face_up"] for c in cards)
+
+
+def next_turn(state):
+    """
+    End the current player's turn. If they now have all cards face up, they
+    END the hole and everyone else gets one final turn; when the turn
+    comes back round to the ender the phase becomes "round_over".
+    """
+    me = state["current"]
+    if state["ender"] is None and _all_face_up(state["players"][me]["grid_occ"]):
+        state["ender"] = me
+    next_player(state)
+    state["drawn_from"] = None
+    if state["ender"] is not None and state["current"] == state["ender"]:
+        state["phase"] = "round_over"
+    else:
+        state["phase"] = "draw"
+        _announce_turn(state)
+
+
+def round_over(state):
+    """True when the final turns of this hole are finished."""
+    return state["phase"] == "round_over"
+
+
+def end_round(state):
+    """
+    Score the hole: each player's score is score_grid of their grid, added
+    to their running total, then the hole counter goes up. (Turning every
+    card face up is the wiring's job, so it can be seen on screen.)
+    """
+    for player in state["players"]:
+        player["score"] = score_grid(player["grid_occ"])
+        player["total"] += player["score"]
+    state["hole"] += 1
+    state["ender"] = None
+    state["drawn_from"] = None
+
+
+def game_over(state):
+    """True once all HOLES holes have been scored."""
+    return state["hole"] > HOLES
+
+
+def winner(state):
+    """
+    Index of the player with the LOWEST total once the game is over, or
+    None if it is not over yet or the best total is tied.
+    """
+    if not game_over(state):
+        return None
+    totals = [player["total"] for player in state["players"]]
+    best = min(totals)
+    if totals.count(best) > 1:
+        return None
+    return totals.index(best)
+
+
+# --- Stage 11 wiring: how a click or key plays a turn -------------------
+# handle_input only dispatches; these functions hold the Golf flow. They
+# call the Stage 2 and 6-9 functions and the rule functions above.
+REVEAL_COUNT = 2                   # cards each player turns up to start
+YELLOW = (255, 230, 120)
+
+
+def _announce_turn(state):
+    """Show the "hand over the mouse" banner for the current player."""
+    state["message"] = f"PLAYER {state['current'] + 1}'S TURN"
+    state["message_t"] = 1.5
+
+
+def _over_pile(pos, center):
+    """True if the point is on the card-sized area around a pile."""
+    return (abs(pos[0] - center[0]) <= CARD_SIZE[0] / 2
+            and abs(pos[1] - center[1]) <= CARD_SIZE[1] / 2)
+
+
+def new_game(state, sfx):
+    """Start over: totals and the hole counter back to 0, then a fresh deal."""
+    for player in state["players"]:
+        player["score"] = 0
+        player["total"] = 0
+    state["hole"] = 1
+    reset_table(state, sfx)
+
+
+def start_discard(state, sfx):
+    """Turn the top card of the deck face up to start the discard pile."""
+    if not state["deck"]:
+        return None
+    card = state["deck"].pop(0)
+    send_card(card, DISCARD_POS, "discard", None, face_up=True)
+    _push_discard(state, card)
+    return card
+
+
+def refill_deck(state):
+    """
+    If the deck has run out, shuffle the discard pile (except its top card)
+    back in as a new face-down deck. Returns True if the deck has cards.
+    """
+    if state["deck"]:
+        return True
+    if len(state["discard"]) <= 1:
+        return False
+    top = state["discard"][-1]
+    old = state["discard"][:-1]
+    random.shuffle(old)
+    for card in old:
+        reset_card_zone(card, "deck", pos=DECK_POS, face_up=False)
+    state["deck"] = old
+    state["discard"] = [top]
+    return True
+
+
+def reveal_card(state, card, sfx):
+    """
+    Reveal phase: the current player turns one of their own face-down grid
+    cards up. After REVEAL_COUNT cards the turn passes; once every player
+    has revealed, the discard pile is started and play begins.
+    Returns True if the card was turned.
+    """
+    me = state["current"]
+    if (state["phase"] != "reveal" or card["owner"] != me
+            or card["zone"] != "grid" or card["face_up"]
+            or state["revealed"][me] >= REVEAL_COUNT):
+        return False
+    flip_card(card, sfx)
+    state["revealed"][me] += 1
+    if state["revealed"][me] == REVEAL_COUNT:
+        next_player(state)
+        if all(r >= REVEAL_COUNT for r in state["revealed"]):
+            start_discard(state, sfx)
+            state["phase"] = "draw"
+        _announce_turn(state)
+    return True
+
+
+def draw_from_deck(state, sfx):
+    """Draw phase: take the top of the deck into the player's hand."""
+    if state["phase"] != "draw":
+        return None
+    refill_deck(state)
+    card = deal_to_hand(state, state["current"], sfx)
+    if card is None:
+        return None
+    state["phase"] = "place"
+    state["drawn_from"] = "deck"
+    return card
+
+
+def draw_from_discard(state, sfx):
+    """Draw phase: take the top of the discard pile into the hand."""
+    if state["phase"] != "draw" or not state["discard"]:
+        return None
+    me = state["current"]
+    hand = state["players"][me]["hand_occ"]
+    slot = hand.index(None)
+    card = state["discard"].pop()
+    hand[slot] = card
+    send_card(card, PLAYER_HAND_SLOTS[me][slot], "hand", slot,
+              face_up=True, owner=me)
+    play(sfx, "slide")
+    state["phase"] = "place"
+    state["drawn_from"] = "discard"
+    return card
+
+
+def golf_press(state, pos, sfx):
+    """What a left click at pos means, depending on the phase."""
+    phase = state["phase"]
+    me = state["current"]
+    if phase == "scored":
+        continue_after_hole(state, sfx)
+    elif phase == "reveal":
+        picked = top_card_at(state["cards"], pos, owner=me)
+        if picked is not None:
+            reveal_card(state, picked, sfx)
+    elif phase == "draw":
+        if _over_pile(pos, DECK_POS):
+            draw_from_deck(state, sfx)
+        elif _over_pile(pos, DISCARD_POS):
+            draw_from_discard(state, sfx)
+    elif phase == "place":
+        picked = top_card_at(state["cards"], pos, owner=me)
+        if picked is not None and picked["zone"] == "hand":
+            begin_drag(picked, pos, sfx)   # only the held card can be dragged
+
+
+def golf_space(state, sfx):
+    """SPACE: draw from the deck, or go on to the next hole."""
+    if state["phase"] == "draw":
+        draw_from_deck(state, sfx)
+    elif state["phase"] == "scored":
+        continue_after_hole(state, sfx)
+
+
+def finish_hole(state, sfx):
+    """
+    The last turn is done: turn every face-down card up, score the hole
+    (end_round) and wait for a click or SPACE (phase "scored").
+    """
+    for player in state["players"]:
+        for card in player["grid_occ"]:
+            if card is not None and not card["face_up"]:
+                flip_card(card, sfx)
+    end_round(state)
+    state["phase"] = "scored"
+
+
+def continue_after_hole(state, sfx):
+    """After the scores: the next hole, or a whole new game if it is over."""
+    state["queue"] = []
+    if game_over(state):
+        new_game(state, sfx)
+    else:
+        reset_table(state, sfx)
+
+
+def golf_hud_lines(state):
+    """The (text, color) lines for the Golf panel at the top right."""
+    phase = state["phase"]
+    me = state["current"]
+    hole = state["hole"] - 1 if phase == "scored" else state["hole"]
+    hole = max(1, min(hole, HOLES))
+    totals = "  ".join(f"P{i + 1}: {p['total']}"
+                       for i, p in enumerate(state["players"]))
+    lines = [(f"HOLE {hole} OF {HOLES}", TEXT_COLOR),
+             (f"TOTALS  {totals}", TEXT_COLOR)]
+    if phase == "reveal":
+        left = REVEAL_COUNT - state["revealed"][me]
+        lines.append((f"PLAYER {me + 1}: FLIP {left} OF YOUR CARDS", YELLOW))
+    elif phase == "draw":
+        lines.append((f"PLAYER {me + 1}: DRAW A CARD", YELLOW))
+        lines.append(("click the deck or the discard", TEXT_COLOR))
+    elif phase == "place":
+        lines.append((f"PLAYER {me + 1}: PLACE YOUR CARD", YELLOW))
+        if state["drawn_from"] == "deck":
+            lines.append(("drop it on a grid card to swap,", TEXT_COLOR))
+            lines.append(("or on the discard to throw it away", TEXT_COLOR))
+        else:
+            lines.append(("drop it on a grid card (must swap)", TEXT_COLOR))
+    elif phase == "scored":
+        scores = "  ".join(f"P{i + 1}: {p['score']}"
+                           for i, p in enumerate(state["players"]))
+        lines.append((f"HOLE SCORES  {scores}", YELLOW))
+        if game_over(state):
+            win = winner(state)
+            lines.append(("TIE GAME!" if win is None
+                          else f"PLAYER {win + 1} WINS!", YELLOW))
+            lines.append(("click or SPACE: play again", TEXT_COLOR))
+        else:
+            lines.append(("click or SPACE: next hole", TEXT_COLOR))
+    if state["ender"] is not None and phase in ("draw", "place"):
+        lines.append((f"PLAYER {state['ender'] + 1} IS DONE: LAST TURN",
+                      (255, 170, 130)))
+    return lines
+
+
+def draw_golf_hud(screen, font, lines):
+    """Draw the Golf panel, right-aligned in the free top-right corner."""
+    y = 10
+    for text, color in lines:
+        surf = font.render(text, True, color)
+        screen.blit(surf, surf.get_rect(topright=(WINDOW_SIZE[0] - 12, y)))
+        y += surf.get_height() + 2
 
 
 if __name__ == "__main__":

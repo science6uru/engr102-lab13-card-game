@@ -654,5 +654,379 @@ class Stage9MovementOverTime(unittest.TestCase):
         self.assertAlmostEqual(c["pos"][0], expected)
 
 
+def golf_card(rank, face_up=False, owner=0, zone="grid", slot=None):
+    """A card of the given rank for the Golf rule tests."""
+    c = g.make_card("hearts", rank)
+    g.reset_card_zone(c, zone, slot=slot, face_up=face_up, owner=owner)
+    return c
+
+
+class Stage11GolfRules(unittest.TestCase):
+    """Issue #20 - four-card Golf: scoring, legal moves, turns, winner."""
+
+    def setUp(self):
+        self.state = g.make_state(2)
+
+    def test_11_0_card_values(self):
+        values = {"ace": 1, "2": -2, "3": 3, "10": 10,
+                  "jack": 10, "queen": 10, "king": 0}
+        for rank, points in values.items():
+            self.assertEqual(g.card_value(golf_card(rank)), points, rank)
+
+    def test_11_1_score_grid_known_grid(self):
+        """ace + 5 (column 0,2) and queen + 3 (column 1,3) = 1+5+10+3."""
+        grid = [golf_card("ace"), golf_card("queen"),
+                golf_card("5"), golf_card("3")]
+        self.assertEqual(g.score_grid(grid), 19)
+
+    def test_11_2_score_grid_empty_pair_and_king(self):
+        self.assertEqual(g.score_grid([None] * 4), 0)
+        # a pair of 7s in column (0,2) scores 0; the other column 2 + king
+        grid = [golf_card("7"), golf_card("2"),
+                golf_card("7"), golf_card("king")]
+        self.assertEqual(g.score_grid(grid), -2)
+        # equal ranks in a ROW (slots 0,1) are not a pair
+        row = [golf_card("7"), golf_card("7"), golf_card("ace"),
+               golf_card("king")]
+        self.assertEqual(g.score_grid(row), 7 + 7 + 1)
+
+    def test_11_3_legal_move_rules(self):
+        s = self.state
+        held = golf_card("9", face_up=True, zone="hand", slot=0)
+        s["phase"] = "place"
+        s["drawn_from"] = "deck"
+        self.assertTrue(g.legal_move(s, held, ("grid", 2)))
+        self.assertTrue(g.legal_move(s, held, ("discard", None)))
+        self.assertTrue(g.legal_move(s, held, ("hand", None)))
+        self.assertFalse(g.legal_move(s, held, ("grid", 4)))   # no slot 4
+        # taken from the discard: it must be swapped in, never thrown back
+        s["drawn_from"] = "discard"
+        self.assertFalse(g.legal_move(s, held, ("discard", None)))
+        self.assertTrue(g.legal_move(s, held, ("grid", 0)))
+        # wrong phase: nothing may be dropped before drawing
+        s["phase"] = "draw"
+        self.assertFalse(g.legal_move(s, held, ("grid", 0)))
+        # grid cards cannot be dragged around on their own
+        s["phase"] = "place"
+        in_grid = golf_card("9", zone="grid", slot=1)
+        self.assertFalse(g.legal_move(s, in_grid, ("grid", 2)))
+
+    def test_11_4_next_turn_wraps_to_first_player(self):
+        s = self.state
+        s["phase"] = "place"
+        s["current"] = 1
+        g.next_turn(s)
+        self.assertEqual(s["current"], 0)
+        self.assertEqual(s["phase"], "draw")
+        self.assertIsNone(s["drawn_from"])
+
+    def test_11_4b_ender_gives_everyone_else_one_final_turn(self):
+        s = self.state
+        s["players"][0]["grid_occ"] = [golf_card("3", face_up=True)
+                                       for _ in range(4)]
+        s["current"] = 0
+        g.next_turn(s)                       # player 0 turned the last card
+        self.assertEqual(s["ender"], 0)
+        self.assertEqual(s["current"], 1)
+        self.assertFalse(g.round_over(s))    # player 1 still has a turn
+        g.next_turn(s)                       # the final turn is done
+        self.assertTrue(g.round_over(s))
+
+    def test_11_5_game_over_only_after_the_last_hole(self):
+        s = self.state
+        self.assertFalse(g.game_over(s))
+        for _ in range(g.HOLES - 1):
+            g.end_round(s)
+        self.assertFalse(g.game_over(s))     # hole 9 is still being played
+        g.end_round(s)
+        self.assertTrue(g.game_over(s))
+
+    def test_11_5b_end_round_adds_scores_to_totals(self):
+        s = self.state
+        s["players"][0]["grid_occ"] = [golf_card("5")] * 4   # two pairs = 0
+        s["players"][1]["grid_occ"] = [golf_card("ace"), None,
+                                       golf_card("4"), None]
+        g.end_round(s)
+        self.assertEqual([p["score"] for p in s["players"]], [0, 5])
+        g.end_round(s)
+        self.assertEqual([p["total"] for p in s["players"]], [0, 10])
+        self.assertEqual(s["hole"], 3)
+
+    def test_11_6_winner_is_lowest_total_and_ties_give_none(self):
+        s = self.state
+        s["players"][0]["total"] = 30
+        s["players"][1]["total"] = 12
+        self.assertIsNone(g.winner(s))       # game not over yet
+        s["hole"] = g.HOLES + 1
+        self.assertEqual(g.winner(s), 1)
+        s["players"][0]["total"] = 12
+        self.assertIsNone(g.winner(s))       # tie
+
+    def test_11_7_cannot_move_the_other_players_cards(self):
+        s = self.state
+        s["phase"] = "place"
+        s["drawn_from"] = "deck"
+        theirs = golf_card("9", face_up=True, owner=1, zone="hand", slot=0)
+        s["current"] = 0
+        self.assertFalse(g.legal_move(s, theirs, ("grid", 0)))
+        s["current"] = 1                     # same move, now their turn
+        self.assertTrue(g.legal_move(s, theirs, ("grid", 0)))
+
+    def test_11_8_make_state_has_separate_golf_fields(self):
+        s = g.make_state(2)
+        self.assertEqual(s["phase"], "reveal")
+        self.assertEqual(s["hole"], 1)
+        self.assertEqual([p["total"] for p in s["players"]], [0, 0])
+        s["revealed"][0] = 2
+        self.assertEqual(s["revealed"], [2, 0])
+
+
+# ---- Stage 11 wiring: whole turns played through handle_input ----------
+def golf_table(phase="draw", current=0):
+    """A Golf table with the rules ON: 4 face-down cards per player.
+
+    Cards are dealt from an UNSHUFFLED deck (so the numbers are known):
+    player 0 gets clubs ace, 2, 3, 4; player 1 gets clubs 5, 6, 7, 8; the
+    next cards off the deck are clubs 9, 10, ...
+    """
+    s = g.make_state(2)
+    s["rules_on"] = True
+    s["sfx"] = {}
+    s["phase"] = phase
+    s["current"] = current
+    deck = g.make_deck()
+    s["cards"] = list(deck)
+    s["deck"] = list(deck)
+    for p in (0, 1):
+        for slot in range(4):
+            c = s["deck"].pop(0)
+            g.reset_card_zone(c, "grid", pos=g.PLAYER_GRID_SLOTS[p][slot],
+                              slot=slot, face_up=False, owner=p)
+            s["players"][p]["grid_occ"][slot] = c
+    return s
+
+
+def press(s, pos):
+    """A left mouse press at pos, sent through handle_input."""
+    event = pygame.event.Event(pygame.MOUSEBUTTONDOWN, button=1, pos=pos)
+    return g.handle_input([event], s, {}, pos)
+
+
+def release(s, pos):
+    """A left mouse release at pos, sent through handle_input."""
+    event = pygame.event.Event(pygame.MOUSEBUTTONUP, button=1, pos=pos)
+    return g.handle_input([event], s, {}, pos)
+
+
+def key(s, k):
+    """A key press, sent through handle_input."""
+    return g.handle_input([pygame.event.Event(pygame.KEYDOWN, key=k)],
+                          s, {}, (0, 0))
+
+
+def run(s, seconds):
+    """Run update() at 120 fps for that many seconds."""
+    for _ in range(int(seconds * 120)):
+        g.update(s, 1 / 120, (0, 0), {})
+
+
+def draw_and_land(s):
+    """Player draws from the deck and the card finishes flying to the hand."""
+    card = g.draw_from_deck(s, {})
+    run(s, 1.0)
+    return card
+
+
+class Stage11Wiring(unittest.TestCase):
+    """Issue #20 - the rules hooked up: reveal, draw, place, score."""
+
+    def test_11_9_reveal_phase_two_cards_each_then_play_starts(self):
+        s = golf_table("reveal")
+        press(s, g.PLAYER_GRID_SLOTS[1][0])        # not your card
+        self.assertFalse(s["players"][1]["grid_occ"][0]["face_up"])
+        press(s, g.PLAYER_GRID_SLOTS[0][0])
+        press(s, g.PLAYER_GRID_SLOTS[0][0])        # already up: ignored
+        self.assertEqual(s["revealed"], [1, 0])
+        press(s, g.PLAYER_GRID_SLOTS[0][1])
+        self.assertEqual((s["current"], s["phase"]), (1, "reveal"))
+        press(s, g.PLAYER_GRID_SLOTS[1][2])
+        press(s, g.PLAYER_GRID_SLOTS[1][3])
+        self.assertEqual((s["current"], s["phase"]), (0, "draw"))
+        self.assertEqual(len(s["discard"]), 1)     # the discard pile started
+        self.assertTrue(s["discard"][0]["face_up"])
+        self.assertEqual(len(s["deck"]), 43)
+
+    def test_11_10_drag_is_not_allowed_before_drawing(self):
+        s = golf_table("draw")
+        press(s, g.PLAYER_GRID_SLOTS[0][0])
+        self.assertFalse(any(c["dragging"] for c in s["cards"]))
+        s["phase"] = "place"                       # even holding a card
+        press(s, g.PLAYER_GRID_SLOTS[0][0])        # a GRID card stays put
+        self.assertFalse(any(c["dragging"] for c in s["cards"]))
+
+    def test_11_11_click_the_deck_or_press_space_draws(self):
+        s = golf_table("draw")
+        press(s, g.DECK_POS)
+        self.assertEqual((s["phase"], s["drawn_from"]), ("place", "deck"))
+        self.assertIsNotNone(s["players"][0]["hand_occ"][0])
+        self.assertEqual(len(s["deck"]), 43)
+        s2 = golf_table("draw")
+        self.assertTrue(key(s2, pygame.K_SPACE))
+        self.assertEqual(s2["phase"], "place")
+        # SPACE does nothing while you already hold a card
+        key(s2, pygame.K_SPACE)
+        self.assertEqual(len(s2["deck"]), 43)
+
+    def test_11_12_take_the_top_of_the_discard_pile(self):
+        s = golf_table("draw")
+        top = g.start_discard(s, {})
+        run(s, 1.0)
+        press(s, g.DISCARD_POS)
+        self.assertEqual((s["phase"], s["drawn_from"]), ("place", "discard"))
+        self.assertIs(s["players"][0]["hand_occ"][0], top)
+        self.assertEqual(s["discard"], [])
+        self.assertEqual((top["zone"], top["owner"]), ("hand", 0))
+
+    def test_11_13_swap_replaces_a_grid_card_and_passes_the_turn(self):
+        s = golf_table("draw")
+        held = draw_and_land(s)
+        self.assertEqual(held["pos"], list(g.PLAYER_HAND_SLOTS[0][0]))
+        old = s["players"][0]["grid_occ"][2]
+        press(s, g.PLAYER_HAND_SLOTS[0][0])
+        release(s, g.PLAYER_GRID_SLOTS[0][2])
+        self.assertIs(s["players"][0]["grid_occ"][2], held)
+        self.assertIsNone(s["players"][0]["hand_occ"][0])
+        self.assertEqual(old["zone"], "discard")
+        self.assertTrue(old["face_up"])
+        self.assertIs(s["discard"][-1], old)       # the newest card is last
+        self.assertEqual((s["current"], s["phase"]), (1, "draw"))
+        self.assertEqual(s["message"], "PLAYER 2'S TURN")
+
+    def test_11_14_a_drawn_deck_card_may_be_discarded(self):
+        s = golf_table("draw")
+        held = draw_and_land(s)
+        press(s, g.PLAYER_HAND_SLOTS[0][0])
+        release(s, g.DISCARD_POS)
+        self.assertEqual(held["zone"], "discard")
+        self.assertIs(s["discard"][-1], held)
+        self.assertIsNone(s["players"][0]["hand_occ"][0])
+        self.assertEqual((s["current"], s["phase"]), (1, "draw"))
+
+    def test_11_15_a_card_from_the_discard_must_be_swapped_in(self):
+        s = golf_table("draw")
+        g.start_discard(s, {})
+        run(s, 1.0)
+        press(s, g.DISCARD_POS)
+        run(s, 1.0)
+        held = s["players"][0]["hand_occ"][0]
+        press(s, g.PLAYER_HAND_SLOTS[0][0])
+        release(s, g.DISCARD_POS)                  # not allowed: goes home
+        self.assertEqual(held["zone"], "hand")
+        self.assertEqual(held["target"], list(g.PLAYER_HAND_SLOTS[0][0]))
+        self.assertEqual((s["current"], s["phase"]), (0, "place"))
+
+    def test_11_16_dropping_on_the_other_grid_goes_home(self):
+        s = golf_table("draw")
+        held = draw_and_land(s)
+        press(s, g.PLAYER_HAND_SLOTS[0][0])
+        release(s, g.PLAYER_GRID_SLOTS[1][0])
+        self.assertEqual(held["zone"], "hand")
+        self.assertEqual((s["current"], s["phase"]), (0, "place"))
+
+    def test_11_17_clicking_the_held_card_does_not_flip_it(self):
+        s = golf_table("draw")
+        held = draw_and_land(s)
+        press(s, g.PLAYER_HAND_SLOTS[0][0])
+        release(s, g.PLAYER_HAND_SLOTS[0][0])      # a click, not a drag
+        self.assertTrue(held["face_up"])
+        self.assertEqual(held["target"], list(g.PLAYER_HAND_SLOTS[0][0]))
+        self.assertEqual((s["current"], s["phase"]), (0, "place"))
+
+    def test_11_18_a_whole_hole_is_played_and_scored(self):
+        s = golf_table("draw")
+        for slot in range(3):                      # player 0: 3 cards up
+            g.flip_card(s["players"][0]["grid_occ"][slot], {})
+        draw_and_land(s)                           # clubs 9
+        press(s, g.PLAYER_HAND_SLOTS[0][0])
+        release(s, g.PLAYER_GRID_SLOTS[0][3])      # swap the last face-down
+        self.assertEqual(s["ender"], 0)            # player 0 is finished
+        self.assertEqual((s["current"], s["phase"]), (1, "draw"))
+        draw_and_land(s)                           # player 1: the final turn
+        press(s, g.PLAYER_HAND_SLOTS[1][0])
+        release(s, g.DISCARD_POS)                  # throws clubs 10 away
+        self.assertEqual(s["phase"], "round_over")
+        g.update(s, 1 / 120, (0, 0), {})           # update scores the hole
+        self.assertEqual(s["phase"], "scored")
+        self.assertEqual(s["hole"], 2)
+        for p in (0, 1):
+            for c in s["players"][p]["grid_occ"]:
+                self.assertTrue(c["face_up"])      # everything turned over
+        # player 0: ace,2 / 3,9 -> (1+3) + (-2+9) = 11; player 1: 5,6 / 7,8 = 26
+        self.assertEqual([p["score"] for p in s["players"]], [11, 26])
+        self.assertEqual([p["total"] for p in s["players"]], [11, 26])
+
+    def test_11_19_click_after_the_scores_starts_the_next_hole(self):
+        s = golf_table("scored")
+        s["hole"] = 2
+        s["players"][0]["total"] = 11
+        press(s, (5, 5))
+        self.assertEqual(s["phase"], "reveal")
+        self.assertEqual(len(s["queue"]), 8)       # a fresh deal
+        self.assertEqual(s["discard"], [])
+        self.assertEqual(s["current"], 1)          # the starter rotates
+        self.assertEqual(s["players"][0]["total"], 11)   # totals are kept
+
+    def test_11_20_after_the_last_hole_a_click_starts_a_new_game(self):
+        s = golf_table("scored")
+        s["hole"] = g.HOLES + 1
+        s["players"][0]["total"] = 40
+        s["players"][1]["total"] = 33
+        lines = [text for text, _ in g.golf_hud_lines(s)]
+        self.assertIn("PLAYER 2 WINS!", lines)
+        key(s, pygame.K_SPACE)
+        self.assertEqual(s["hole"], 1)
+        self.assertEqual([p["total"] for p in s["players"]], [0, 0])
+        self.assertEqual(s["phase"], "reveal")
+
+    def test_11_21_the_deck_is_refilled_from_the_discard_pile(self):
+        s = golf_table("draw")
+        s["deck"] = []
+        for _ in range(4):                         # four cards in the discard
+            card = s["cards"][-1 - len(s["discard"])]
+            g.send_card(card, g.DISCARD_POS, "discard", None, face_up=True)
+            s["discard"].append(card)
+        top = s["discard"][-1]
+        self.assertTrue(g.refill_deck(s))
+        self.assertEqual(len(s["deck"]), 3)
+        self.assertEqual(s["discard"], [top])      # the top card stays
+        for c in s["deck"]:
+            self.assertEqual(c["zone"], "deck")
+            self.assertFalse(c["face_up"])
+        s["deck"] = []
+        s["discard"] = [top]
+        self.assertFalse(g.refill_deck(s))         # nothing left to reuse
+
+    def test_11_22_tab_is_ignored_and_r_restarts(self):
+        s = golf_table("draw")
+        key(s, pygame.K_TAB)
+        self.assertEqual(s["current"], 0)          # turns are automatic
+        s["players"][1]["total"] = 9
+        s["hole"] = 4
+        key(s, pygame.K_r)
+        self.assertEqual((s["hole"], s["phase"]), (1, "reveal"))
+        self.assertEqual(s["players"][1]["total"], 0)
+
+    def test_11_23_the_hud_tells_each_player_what_to_do(self):
+        s = golf_table("reveal")
+        lines = [text for text, _ in g.golf_hud_lines(s)]
+        self.assertEqual(lines[0], "HOLE 1 OF 9")
+        self.assertIn("PLAYER 1: FLIP 2 OF YOUR CARDS", lines)
+        s["phase"] = "draw"
+        s["ender"] = 1
+        lines = [text for text, _ in g.golf_hud_lines(s)]
+        self.assertIn("PLAYER 1: DRAW A CARD", lines)
+        self.assertIn("PLAYER 2 IS DONE: LAST TURN", lines)
+
+
 if __name__ == "__main__":
     unittest.main()
