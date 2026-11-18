@@ -296,5 +296,126 @@ class Stage5LoopAndVsync(unittest.TestCase):
         self.assertIn("120 frames", out)
 
 
+def placed(suit, rank, zone="hand", slot=0, owner=0, pos=(100, 100),
+           face_up=True):
+    """A real make_card put on the table the official way."""
+    c = g.make_card(suit, rank, face_up=face_up)
+    g.reset_card_zone(c, zone, pos=pos, slot=slot, owner=owner)
+    return c
+
+
+class Stage6PickingUp(unittest.TestCase):
+    """Issue #8 - blend, top_card_at, begin_drag, update_drag."""
+
+    def test_6_0_make_card_has_the_announced_keys(self):
+        """Contract: the new drag keys exist with their starting values."""
+        c = g.make_card("hearts", "queen")
+        self.assertFalse(c["dragging"])
+        self.assertEqual(c["drag_offset"], (0.0, 0.0))
+        self.assertEqual(c["press_pos"], (0.0, 0.0))
+
+    def test_6_1_top_card_wins_empty_table_gives_none(self):
+        """Two overlapping cards: the LATER one in the list is on top."""
+        a = placed("hearts", "queen", slot=0, pos=(100, 100))
+        b = placed("clubs", "2", slot=1, pos=(110, 100))
+        point = (105, 100)                   # inside both rectangles
+        self.assertIs(g.top_card_at([a, b], point), b)
+        self.assertIs(g.top_card_at([b, a], point), a)
+        self.assertIsNone(g.top_card_at([a, b], (900, 600)))
+        self.assertIsNone(g.top_card_at([], point))
+
+    def test_6_2_deck_cards_are_never_returned(self):
+        """A card in zone "deck" cannot be grabbed, even under the point."""
+        c = g.make_card("hearts", "queen")   # zone "deck" at DECK_POS
+        self.assertIsNone(g.top_card_at([c], g.DECK_POS))
+
+    def test_6_3_begin_drag_remembers_grab_offset(self):
+        """Card at [100,100], mouse (110,90): offset is (-10, 10)."""
+        c = placed("hearts", "queen", pos=(100, 100))
+        g.begin_drag(c, (110, 90), {})
+        self.assertTrue(c["dragging"])
+        self.assertEqual(c["drag_offset"], (-10, 10))
+        self.assertEqual(c["press_pos"], (110, 90))
+
+    def test_6_4_update_drag_eases_toward_the_cursor(self):
+        """One frame: strictly between start and target. Two seconds:
+        within 1 pixel of the target."""
+        c = placed("hearts", "queen", pos=(100, 100))
+        g.begin_drag(c, (100, 100), {})      # offset (0, 0)
+        g.update_drag(c, (200, 100), 1 / 120)
+        self.assertGreater(c["pos"][0], 100)
+        self.assertLess(c["pos"][0], 200)
+        for _ in range(240):                 # 240 frames x 1/120 s = 2 s
+            g.update_drag(c, (200, 100), 1 / 120)
+        self.assertAlmostEqual(c["pos"][0], 200, delta=1)
+
+    def test_6_5_blend_is_frame_rate_independent(self):
+        """One second of frames leaves the same distance at 60 and 240 fps."""
+        rate = 12
+        left_60 = 1.0
+        for _ in range(60):
+            left_60 *= 1 - g.blend(rate, 1 / 60)
+        left_240 = 1.0
+        for _ in range(240):
+            left_240 *= 1 - g.blend(rate, 1 / 240)
+        self.assertAlmostEqual(left_60, left_240, delta=1e-9)
+
+    def test_6_6_top_card_at_respects_the_owner_filter(self):
+        """owner=1 ignores player 0's card under the point."""
+        mine = placed("hearts", "queen", owner=0, slot=0, pos=(100, 100))
+        theirs = placed("clubs", "2", owner=1, slot=0, pos=(100, 100))
+        point = (100, 100)
+        # player 0's card is LATER (on top), yet owner=1 must skip it
+        self.assertIs(g.top_card_at([theirs, mine], point, owner=1), theirs)
+        self.assertIsNone(g.top_card_at([mine], point, owner=1))
+        self.assertIs(g.top_card_at([theirs, mine], point), mine)
+
+
+class Stage7FlippingAndClicking(unittest.TestCase):
+    """Issue #14 - flip_card, pickup_flip, release_card (click vs drag)."""
+
+    def setUp(self):
+        self.state = g.make_state(2)
+        self.state["sfx"] = {}
+
+    def test_7_0_pickup_flip_key_starts_false(self):
+        """Contract: make_card gains pickup_flip, starting False."""
+        self.assertFalse(g.make_card("hearts", "queen")["pickup_flip"])
+
+    def test_7_1_flip_card_toggles_immediately(self):
+        c = placed("hearts", "queen", face_up=True)
+        g.flip_card(c, {})
+        self.assertFalse(c["face_up"])
+        g.flip_card(c, {})
+        self.assertTrue(c["face_up"])
+
+    def test_7_2_click_on_a_face_up_card_flips_it_down(self):
+        c = placed("hearts", "queen", face_up=True, pos=(100, 100))
+        g.begin_drag(c, (100, 100), {})
+        g.release_card(c, (100, 100), self.state)
+        self.assertFalse(c["face_up"])
+        self.assertFalse(c["dragging"])
+
+    def test_7_3_click_on_a_face_down_card_reveals_it_once(self):
+        c = placed("hearts", "queen", face_up=False, pos=(100, 100))
+        g.begin_drag(c, (100, 100), {})
+        self.assertTrue(c["face_up"])        # flipped as it was lifted
+        self.assertTrue(c["pickup_flip"])
+        g.release_card(c, (100, 100), self.state)
+        self.assertTrue(c["face_up"])        # NOT flipped back down
+        self.assertFalse(c["pickup_flip"])
+
+    def test_7_4_a_real_drag_is_not_a_click(self):
+        """Extra: moving 8 px or more before release never flips."""
+        up = placed("hearts", "queen", face_up=True, pos=(100, 100))
+        g.begin_drag(up, (100, 100), {})
+        g.release_card(up, (100 + g.CLICK_DIST, 100), self.state)
+        self.assertTrue(up["face_up"])       # a drag leaves it as it was
+        down = placed("clubs", "2", face_up=False, pos=(100, 100))
+        g.begin_drag(down, (100, 100), {})
+        g.release_card(down, (300, 100), self.state)
+        self.assertTrue(down["face_up"])     # revealed by lifting, once
+
+
 if __name__ == "__main__":
     unittest.main()
