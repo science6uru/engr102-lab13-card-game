@@ -10,55 +10,50 @@ import pygame
 os.environ.setdefault("SDL_MOUSE_FOCUS_CLICKTHROUGH", "1")
 
 WINDOW_SIZE = (1000, 660)
-CARD_SIZE   = (90, 126)        # smaller so two grids fit on one screen
+CARD_SIZE   = (90, 126)
 NUM_PLAYERS = 2
-HOLES = 9                      # a full game is nine hands (Stage 11)
+HOLES = 9
 SUITS = ["clubs", "diamonds", "hearts", "spades"]
 RANKS = ["ace", "2", "3", "4", "5", "6", "7", "8", "9", "10",
          "jack", "queen", "king"]
 
-# deck and discard are shared (not per-plauyer), in the middle of the table
 DECK_POS    = (460, 330)
 DISCARD_POS = (600, 330)
 
-# anti-diagonal layout (issue #13): player 1 owns the top-left corner,
-# player 0 the bottom-right; piles stay in the middle where they cross.
+# player 1 owns the top-left corner, player 0 the bottom-right
 # slots 0,1 = top row of a grid, 2,3 = bottom row (Golf columns: (0,2), (1,3))
 PLAYER_GRID_SLOTS = [
     [(700, 415), (810, 415), (700, 550), (810, 550)],   # player 0
     [(190, 110), (300, 110), (190, 245), (300, 245)]]   # player 1
 
-# one list of hand slots PER PLAYER (Golf needs one "held card" spot each)
-PLAYER_HAND_SLOTS = [[(500, 482)],    # player 0
-                     [(500, 178)]]    # player 1
+PLAYER_HAND_SLOTS = [[(500, 482)],
+                     [(500, 178)]]
 
 
 def make_card(suit, rank, zone="deck", pos=DECK_POS, face_up=False):
-    """
-    creates the card with its different properties
-    """
     card = {"suit": suit, "rank": rank,
             "pos": list(pos),  # store as a list, not the original tuple
             "face_up": face_up, "zone": zone, "slot": None, "owner": None,
             "motion": None, "target": [0.0, 0.0],
-            # Stage 6 (issue #8): dragging with the mouse
             "dragging": False,
             "drag_offset": (0.0, 0.0),   # where on the card the mouse grabbed it
             "press_pos": (0.0, 0.0),     # where the mouse was on click
-            # Stage 7 (issue #14): click vs drag
             "pickup_flip": False,       # did begin_drag already flip it?
-            # Stage 9 (issue #17): a dealt card's flight through the air
             "t": 0.0,                    # seconds into a "deal" flight
             "start": [0.0, 0.0],         # where the flight began
-            "arc": 0.0}                  # how high the flight arcs
+            "arc": 0.0,                  # how high the flight arcs
+            # polish fields: only update_polish and the flip timer write these
+            "vel": [0.0, 0.0],           # px/s, feeds bend and tilt
+            "bend": 0.0,                 # strip shear while dragging
+            "tilt": 0.0,                 # lean in degrees
+            "lift": 0.0,                 # smoothed height above the table
+            "wobble_t": 0.0,             # seconds left in the landing wobble
+            "flipping": False,           # is the flip spin playing?
+            "flip_t": 0.0}               # seconds into the flip spin
     return card
 
 
 def make_deck():
-    """
-    creates 52 deck of cards
-    returns a list of 52 card dicts, one for every suit and every rank.
-    """
     deck = []
     for suit in SUITS:
         for rank in RANKS:
@@ -68,17 +63,12 @@ def make_deck():
     return deck
 
 
-# ----------------------------------------------------------------------
-# Stage 2 - PLAYERS, ZONES, SHUFFLING AND DEALING (issue #2)
-# ----------------------------------------------------------------------
+# Stage 2 - PLAYERS, ZONES, SHUFFLING AND DEALING
 def reset_card_zone(card, zone, pos=None, slot=None, face_up=None,
                     owner=None):
-    '''
-    is the one way to put a card in a zone and slot. Game rules will call this.
-    '''
-    # card = 0suit, 1rank, 2pos, 3face_up, 4zone, 5slot, 6owner, 7motion, 8target
+    """The one way to put a card in a zone and slot (rules call this)."""
 
-    card["zone"] = zone # sets the zone, slot, owner based on parameter
+    card["zone"] = zone
     card["slot"] = slot
     card["owner"] = owner
 
@@ -89,27 +79,21 @@ def reset_card_zone(card, zone, pos=None, slot=None, face_up=None,
         card["pos"] = list(pos)  # store as a list, not the original tuple
         card["motion"] = None
 
-    if card["zone"] == "deck" or card["zone"] == "discard": # ensuring no owner if in deck or discard pile
+    if card["zone"] == "deck" or card["zone"] == "discard":
         card["owner"] = None
 
 
 def shuffle_deck(deck):
-    '''
-    randomizes the deck
-    '''
     random.shuffle(deck)
 
 
 def deal_card(deck, hand):
-    '''
-    returns the card, or None
-    Takes the top card of the deck (deck.pop(0)) and puts it in the first empty hand slot (the first None in the list).
-    '''
-    if not deck: # ensure deck isnt empty
+    """Move the top deck card into the first empty hand slot. Returns the card or None."""
+    if not deck:
         return None
 
     room_check = False
-    for spot in hand:  # checking hand has slots
+    for spot in hand:
         if spot is None:
             room_check = True
             break
@@ -118,26 +102,23 @@ def deal_card(deck, hand):
         return None
 
     top_card = deck.pop(0)
-    slot = hand.index(None)   # WHERE we will put it (the index, not the value)
-    hand[slot] = top_card     # write the card INTO the list
+    slot = hand.index(None)
+    hand[slot] = top_card
     reset_card_zone(top_card, "hand", slot=slot, face_up=True)
     return top_card
 
 
 def make_state(num_players=NUM_PLAYERS):
-    '''
-    returns the state: one dictionary holding everything the game currently knows (who has which card, whose turn it is, what message is showing). It is plain data only, so it doesn't use pygame and can be tested without a window.
-    '''
+    """One dict holding everything the game knows. Plain data, no pygame."""
     state = {"cards": [], "deck": [],
              "players": [{"grid_occ": [None] * len(PLAYER_GRID_SLOTS[i]),
                           "hand_occ": [None] * len(PLAYER_HAND_SLOTS[i]),
-                          "score": 0,      # this hole (Stage 11)
+                          "score": 0,      # this hole
                           "total": 0}      # running total over all holes
                          for i in range(num_players)],
              "current": 0,
              "message": None, "message_t": 0.0,
-             "sfx": None, "queue": [], "hud_lines": [],
-             # Stage 11 (issue #20): the Golf rules
+             "sfx": None, "queue": [],
              "rules_on": False,   # True = Golf rules (main() turns them on)
              "discard": [],        # the discard pile, top (newest) card LAST
              "phase": "reveal",   # reveal, draw, place, round_over, scored
@@ -148,10 +129,7 @@ def make_state(num_players=NUM_PLAYERS):
     return state
 
 
-# ----------------------------------------------------------------------
-# Stage 3 - LOADING PICTURES AND SOUNDS (issue #3)
-# ----------------------------------------------------------------------
-# Remember the last sound variant played for each kind.
+# Stage 3 - LOADING PICTURES AND SOUNDS
 _last_played = {}
 
 # Assets live next to this file, so the game runs from any directory.
@@ -160,12 +138,10 @@ ASSETS_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)),
 
 
 def scale_card(surface):
-    """Resize a card image to CARD_SIZE."""
     return pygame.transform.smoothscale(surface, CARD_SIZE)
 
 
 def load_card_face(suit, rank):
-    """Load one card face and scale it."""
     filename = f"{rank} of {suit}.png"
     path = os.path.join(ASSETS_DIR, "cards", "fronts", suit, filename)
 
@@ -174,7 +150,6 @@ def load_card_face(suit, rank):
 
 
 def load_deck_faces():
-    """Load all 52 card faces into a dictionary."""
     return {
         (suit, rank): load_card_face(suit, rank)
         for suit in SUITS
@@ -183,7 +158,6 @@ def load_deck_faces():
 
 
 def load_card_back(color="blue"):
-    """Load and scale a card back."""
     filename = f"card back {color}.png"
     path = os.path.join(ASSETS_DIR, "cards", "backs", filename)
 
@@ -192,7 +166,6 @@ def load_card_back(color="blue"):
 
 
 def load_sfx():
-    """Load all sound effects, grouped by kind."""
     kinds = [
         "slide",
         "place",
@@ -230,7 +203,7 @@ def load_sfx():
 
 
 def play(sfx, kind):
-    """Play a random sound without repeating the previous variant."""
+    """Play a random sound of this kind, never the same variant twice in a row."""
     sounds = sfx.get(kind, [])
 
     if not sounds:
@@ -254,9 +227,7 @@ def play(sfx, kind):
     _last_played[kind] = index
 
 
-# ----------------------------------------------------------------------
-# Stage 4 - DRAWING A STILL TABLE (issue #4)
-# ----------------------------------------------------------------------
+# Stage 4 - DRAWING A STILL TABLE
 TABLE_GREEN  = (28, 105, 60)
 SLOT_GREEN   = (22, 88, 50)
 ACTIVE_GREEN = (70, 170, 105)     # active player's slot outlines
@@ -264,12 +235,9 @@ TEXT_COLOR   = (235, 245, 235)
 
 
 def create_display():
-    """
-    opens the window. Returns (screen, refresh_hz, vsynced).
-    Safe even if vsync is not supported - the flag is just ignored.
-    """
+    """Open the window. Returns (screen, refresh_hz, vsynced)."""
     screen = pygame.display.set_mode(WINDOW_SIZE, pygame.SCALED, vsync=1)
-    vsynced = pygame.display.is_vsync()           # did it really happen?
+    vsynced = pygame.display.is_vsync()
     refresh_hz = pygame.display.get_current_refresh_rate()
     if refresh_hz == 0:                           # headless machines
         refresh_hz = 60
@@ -277,41 +245,81 @@ def create_display():
 
 
 def card_rect(card):
-    """
-    Used for drawing cards. Rectangle CARD_SIZE big, centered on pos.
-    """
     rect = pygame.Rect((0, 0), CARD_SIZE)
     rect.center = (round(card["pos"][0]), round(card["pos"][1]))
     return rect
 
 
 def current_texture(card, faces, back):
-    """
-    returns the Surface to show:
-    faces[(card["suit"], card["rank"])] if the card is face up,
-    otherwise back.
-    """
-    if card["face_up"]:
+    """Surface to show for the card. The first half of a flip still shows the old side."""
+    shown_up = card["face_up"]
+    if card["flipping"] and card["flip_t"] / FLIP_DURATION < 0.5:
+        shown_up = not shown_up
+    if shown_up:
         return faces[(card["suit"], card["rank"])]
     else:
         return back
 
 
 def draw_card(screen, card, faces, back):
-    """blits that picture centered
-    on the card's position. dependent on face up or face down"""
-    screen.blit(current_texture(card, faces, back), card_rect(card))
+    """Draw one card with its shadow. Resting cards take a fast path."""
+    tex = current_texture(card, faces, back)
+
+    if (card["motion"] is None and not card["dragging"]
+            and not card["flipping"] and card["wobble_t"] <= 0.0
+            and abs(card["bend"]) < 0.5 and abs(card["tilt"]) < 0.5
+            and card["lift"] < 0.5):
+        rect = card_rect(card)
+        shadow = get_resting_shadow()
+        screen.blit(shadow, shadow.get_rect(
+            center=(rect.centerx + 3, rect.centery + 6)))
+        screen.blit(tex, rect)
+        return
+
+    progress = (min(card["flip_t"] / FLIP_DURATION, 1.0)
+                if card["flipping"] else 0.0)
+    squash = abs(math.cos(math.pi * progress))      # width: 1 -> 0 -> 1
+    pop = 1.0 + 0.12 * math.sin(math.pi * progress)  # height pops up
+    w = max(int(CARD_SIZE[0] * squash), 2)
+    h = int(CARD_SIZE[1] * pop)
+    scaled = pygame.transform.smoothscale(tex, (w, h))
+
+    # bend: shift 12 vertical strips by a sine curve
+    bend = card["bend"]
+    pad = int(abs(bend)) + 2
+    temp = pygame.Surface((w, h + 2 * pad), pygame.SRCALPHA)
+    strips = 12
+    strip_w = w / strips
+    for i in range(strips):
+        t = (i + 0.5) / strips - 0.5
+        dy = pad + math.sin(t * math.pi) * bend
+        temp.blit(scaled, (i * strip_w, dy),
+                  area=(int(i * strip_w), 0, int(math.ceil(strip_w)), h))
+    if abs(card["tilt"]) > 0.5:
+        temp = pygame.transform.rotozoom(temp, card["tilt"], 1.0)
+
+    # shadow: the higher the card, the bigger, softer, fainter and
+    # farther away it is (cheap blur = render small, scale up)
+    lift = card["lift"]
+    blur_k = 1.6 + lift / 25.0
+    spread = 0.92 + lift / 160.0
+    alpha = int(90 * max(0.3, 1.0 - lift / 130.0))
+    small = pygame.Surface((max(int(w / blur_k), 6),
+                            max(int(h / blur_k), 6)), pygame.SRCALPHA)
+    pygame.draw.rect(small, (0, 0, 0, alpha), small.get_rect(),
+                     border_radius=max(small.get_width() // 10, 2))
+    shadow = pygame.transform.smoothscale(
+        small, (max(int(w * spread), 6), max(int(h * spread), 6)))
+    if abs(card["tilt"]) > 0.5:
+        shadow = pygame.transform.rotozoom(shadow, card["tilt"], 1.0)
+    cx, cy = card["pos"]
+    screen.blit(shadow, shadow.get_rect(
+        center=(cx + 3 + lift * 0.35, cy + 6 + lift * 0.6)))
+    screen.blit(temp, temp.get_rect(center=(round(cx), round(cy))))
 
 
 def draw_piles(screen, cards, faces, back, discard=None):
-    """
-    Deck: draw the top 3 cards still in zone "deck" face-down, each
-        2 pixels higher than the last, so the pile looks thick.
-    Discard: draw the 3 NEWEST cards in zone "discard" face-up with a
-        tiny offset each, so the pile looks fanned. `discard` is the
-        state's discard list (oldest first, newest last); without it the
-        cards are taken in list order.
-    """
+    """Deck: top 3 cards face down. Discard: 3 newest face up, slightly offset."""
     deck_parse_count = 0
     in_discard = []
 
@@ -325,13 +333,11 @@ def draw_piles(screen, cards, faces, back, discard=None):
     top_3_in_discard = in_discard[-3:]
 
     # cards in deck: bottom layer first, top card drawn LAST (on top).
-    # draw only as many layers as the pile actually has.
     for i in range(min(3, deck_parse_count) - 1, -1, -1):
         rect = pygame.Rect((0, 0), CARD_SIZE)
         rect.center = (DECK_POS[0], DECK_POS[1] - 2 * i)
         screen.blit(back, rect)
 
-    # cards in discard: centered on the card's own pos, offset per layer
     move_over = 0
     for card in top_3_in_discard:           # oldest first, newest on top
         rect = card_rect(card)
@@ -341,10 +347,7 @@ def draw_piles(screen, cards, faces, back, discard=None):
 
 
 def draw_table(screen, font, current=None):
-    """
-    Felt + slot outlines (active player lighter) + DECK/DISCARD outlines
-    + labels. Drawing only READS: no state is modified here.
-    """
+    """Felt, slot outlines, pile outlines and labels."""
     screen.fill(TABLE_GREEN)
 
     for p in range(NUM_PLAYERS):
@@ -378,10 +381,7 @@ def draw_table(screen, font, current=None):
 
 
 def render(screen, state, font, faces, back):
-    """
-    Draw everything in order: table, piles, then every card that is in
-    a hand or grid of ANY player (cards drawn LAST appear ON TOP).
-    """
+    """Table, piles, resting cards, then moving cards on top."""
     draw_table(screen, font, state["current"])
     draw_piles(screen, state["cards"], faces, back, state.get("discard"))
     # resting cards first; dragged and gliding cards LAST so they are
@@ -389,7 +389,8 @@ def render(screen, state, font, faces, back):
     moving = []
     for card in state["cards"]:
         if card["zone"] in ("hand", "grid"):
-            if card["dragging"] or card["motion"] is not None:
+            if (card["dragging"] or card["motion"] is not None
+                    or card["flipping"]):
                 moving.append(card)
             else:
                 draw_card(screen, card, faces, back)
@@ -397,22 +398,15 @@ def render(screen, state, font, faces, back):
         draw_card(screen, card, faces, back)
 
 
-# ----------------------------------------------------------------------
-# Stage 5 - THE GAME LOOP, TIME AND VSYNC (issue #5)
-# ----------------------------------------------------------------------
+# Stage 5 - THE GAME LOOP, TIME AND VSYNC
 MAX_DT = 0.05    # clamp: a stalled frame must not teleport things
 
 
-def draw_hud(screen, font, message, lines):
-    """Controls hint, stats block, and state["message"] if not empty."""
+def draw_hud(screen, font, message):
+    """Controls hint and the current message."""
     hint = font.render("Click deck/discard or SPACE to draw | Drag to place"
                        " | R: new game | Esc quit", True, TEXT_COLOR)
     screen.blit(hint, (12, 10))
-    y = 34
-    for text, color in lines:
-        surf = font.render(text, True, color)
-        screen.blit(surf, (12, y))
-        y += surf.get_height() + 2
     if message:
         surf = font.render(message, True, (255, 230, 120))
         screen.blit(surf, surf.get_rect(center=(WINDOW_SIZE[0] // 2, 60)))
@@ -422,21 +416,12 @@ DEAL_PICK_DIST = 90   # px around DECK_POS that counts as clicking the deck
 
 
 def next_player(state):
-    """Switch whose turn it is. (Stage 11's next_turn builds on this.)"""
     state["current"] = (state["current"] + 1) % len(state["players"])
 
 
 def handle_input(events, state, sfx, mouse_pos):
-    """
-    Switchboard: send each event to the right function. False = quit.
-      ESC / window close -> quit        SPACE / click the deck -> draw
-      R -> new game                     TAB -> next player (free play only)
-      left mouse down -> grab a card    left mouse up -> release it
-    With state["rules_on"] the Golf rules decide what a click or SPACE
-    means (golf_press, golf_space); this function still only dispatches.
-    Mouse events use their OWN position (event.pos), because mouse_pos
-    was read before the events and can be a frame behind the click.
-    """
+    """Send each event to the right function. False = quit.
+    With rules_on the Golf functions decide what a click or SPACE means."""
     rules = state.get("rules_on", False)
     for event in events:
         if event.type == pygame.QUIT:
@@ -465,7 +450,6 @@ def handle_input(events, state, sfx, mouse_pos):
             elif _distance(pos, DECK_POS) <= DEAL_PICK_DIST:
                 deal_to_hand(state, state["current"], sfx)
             else:
-                # only the current player can grab (owner filter)
                 picked = top_card_at(state["cards"], pos,
                                      owner=state["current"])
                 if picked is not None:
@@ -479,14 +463,7 @@ def handle_input(events, state, sfx, mouse_pos):
 
 
 def update(state, dt, mouse_pos, sfx):
-    """
-    One step of the world (Stage 9):
-    1. count the deal queue down and deal what is due,
-    2. move every card (update_card handles dragging, gliding, dealing),
-    3. count the on-screen message down.
-    update does NOT call update_drag itself any more: update_motion does,
-    otherwise a dragged card would move twice per frame.
-    """
+    """One step of the world: deal from the queue, move every card, count the message down, score a finished hole."""
     # queue entries are tuples (they cannot be edited), so build a NEW list
     waiting = []
     for delay, player, slot in state["queue"]:
@@ -506,13 +483,13 @@ def update(state, dt, mouse_pos, sfx):
             state["message"] = None
             state["message_t"] = 0.0
 
-    # Stage 11: the last turn of a hole is done, so score it
+    # last turn of the hole is done: score it
     if state.get("rules_on") and state["phase"] == "round_over":
         finish_hole(state, sfx)
 
 
 def _pacing_lines(frame_times, vsynced, refresh_hz, using_timer):
-    """HUD stats like fps, pacing mode, frame-time spread (ms)."""
+    """fps, pacing mode and frame-time spread; printed on quit."""
     if len(frame_times) < 2:
         return [], 0.0, 0.0, 0.0
     mean = statistics.mean(frame_times)
@@ -530,13 +507,7 @@ def _pacing_lines(frame_times, vsynced, refresh_hz, using_timer):
 
 
 def _bring_window_to_front():
-    """
-    macOS only. A window opened from a terminal or VS Code often starts
-    behind the app that launched it and ignores the mouse until you click
-    off and back on. This makes the game the active app right away.
-    Needs pyobjc (already in the .venv); does nothing if it is missing, on
-    other systems, or in headless tests.
-    """
+    """macOS only: make the window active so it takes mouse clicks right away."""
     if sys.platform != "darwin" or pygame.display.get_driver() != "cocoa":
         return
     try:
@@ -547,7 +518,6 @@ def _bring_window_to_front():
 
 
 def main(frames=None):
-    """The game window, assets, state, nd the loop."""
     pygame.init()
     screen, refresh_hz, vsynced = create_display()
     pygame.display.set_caption("Golf - 2 players")
@@ -559,41 +529,34 @@ def main(frames=None):
 
     state = make_state(NUM_PLAYERS)
     state["sfx"] = sfx
-    state["rules_on"] = True         # play real Golf (Stage 11)
-    reset_table(state, sfx)          # starts the opening deal (Stage 9)
+    state["rules_on"] = True
+    reset_table(state, sfx)
 
     clock = pygame.time.Clock()
     using_timer = not vsynced
     target_fps = refresh_hz or 60
     last = time.perf_counter()
-    window_times, all_times = [], []
-    stat_clock = 0.0
+    all_times = []
     frame_count = 0
     running = True
 
     while running:
-        # 1. dt
         now = time.perf_counter()
         raw_dt = now - last
         last = now
         dt = min(raw_dt, MAX_DT)
         if frame_count > 0:
-            window_times.append(raw_dt)
             all_times.append(raw_dt)
 
-        # 2. input
         mouse_pos = pygame.mouse.get_pos()
         running = handle_input(pygame.event.get(), state, sfx, mouse_pos)
 
-        # 3. update
         update(state, dt, mouse_pos, sfx)
 
-        # 4. render
         render(screen, state, font, faces, back)
-        draw_hud(screen, font, state["message"], state["hud_lines"])
+        draw_hud(screen, font, state["message"])
         draw_golf_hud(screen, font, golf_hud_lines(state))
 
-        # 5. show
         pygame.display.flip()
         if using_timer:
             clock.tick(target_fps)
@@ -603,14 +566,6 @@ def main(frames=None):
                 and len(all_times) == 60
                 and statistics.mean(all_times) < 0.5 / refresh_hz):
             using_timer = True
-
-        # HUD stats every 0.5 s
-        stat_clock += raw_dt
-        if stat_clock >= 0.5:
-            state["hud_lines"] = _pacing_lines(window_times, vsynced,
-                                               refresh_hz, using_timer)[0]
-            window_times = []
-            stat_clock = 0.0
 
         frame_count += 1
         if frames is not None and frame_count >= frames:
@@ -624,27 +579,17 @@ def main(frames=None):
     pygame.quit()
 
 
-# ----------------------------------------------------------------------
-# Stage 6 - PICKING CARDS UP WITH THE MOUSE (issue #8)
-# ----------------------------------------------------------------------
+# Stage 6 - PICKING CARDS UP WITH THE MOUSE
 DRAG_FOLLOW = 26     # how fast a dragged card catches up with the mouse
 
 
 def blend(rate, dt):
-    """
-    How much of the remaining distance to cover this frame (0 to 1).
-    1 - e^(-rate * dt) takes the same REAL time at 30, 60 or 240 fps.
-    """
+    """Fraction of the remaining distance to cover this frame; same real time at any fps."""
     return 1 - math.exp(-rate * dt)
 
 
 def top_card_at(cards, point, owner=None):
-    """
-    Returns the card the player clicked, or None.
-    Looks from the LAST card to the first (the last is drawn on top).
-    Only cards in zone "hand" or "grid" that are not moving count.
-    If owner is 0 or 1, only that player's cards count.
-    """
+    """Topmost clickable card at point (hand or grid, not moving), optionally one owner's only."""
     for card in reversed(cards):
         if card["zone"] not in ("hand", "grid"):
             continue
@@ -658,11 +603,7 @@ def top_card_at(cards, point, owner=None):
 
 
 def begin_drag(card, mouse_pos, sfx):
-    """
-    Pick a card up: remember where on the card it was grabbed (so it does
-    not jump to the mouse), where the mouse was, and play "slide".
-    Stage 7: a face-down card is flipped as it is lifted (revealed).
-    """
+    """Pick a card up. A face-down card is flipped as it is lifted."""
     card["dragging"] = True
     card["drag_offset"] = (card["pos"][0] - mouse_pos[0],
                            card["pos"][1] - mouse_pos[1])
@@ -674,10 +615,7 @@ def begin_drag(card, mouse_pos, sfx):
 
 
 def update_drag(card, mouse_pos, dt):
-    """
-    Each frame, move the card a FRACTION of the way to where it should
-    be (mouse + grab offset). It eases toward the cursor, never snaps.
-    """
+    """Ease the card toward the mouse (plus the grab offset)."""
     target_x = mouse_pos[0] + card["drag_offset"][0]
     target_y = mouse_pos[1] + card["drag_offset"][1]
     k = blend(DRAG_FOLLOW, dt)
@@ -685,37 +623,23 @@ def update_drag(card, mouse_pos, dt):
     card["pos"][1] += (target_y - card["pos"][1]) * k
 
 
-# ----------------------------------------------------------------------
-# Stage 7 - FLIPPING AND CLICKING (issue #14)
-# ----------------------------------------------------------------------
+# Stage 7 - FLIPPING AND CLICKING
 CLICK_DIST = 8   # px: moved less than this since the press = a click
 
 
 def flip_card(card, sfx):
-    """
-    Turns the card over IMMEDIATELY (rules can read face_up in the same
-    step) and plays the "shove" sound.
-    """
+    """Turn the card over now (face_up changes immediately); the spin is only visual. Ignored while spinning."""
+    if card["flipping"]:
+        return
     card["face_up"] = not card["face_up"]
+    card["flipping"] = True
+    card["flip_t"] = 0.0
     play(sfx, "shove")
 
 
 def release_card(card, mouse_pos, state):
-    """
-    Let go of a dragged card. A DECISION function: it decides and calls
-    send_card, it never moves pixels (Stage 9 does that).
-
-    Click check (Stage 7): moved less than CLICK_DIST since the press = a
-    CLICK, so flip the card, unless begin_drag already flipped it
-    (pickup_flip), then do NOT flip it back. Then stop.
-
-    Otherwise (Stage 8), in this order:
-      a) mouse within SNAP_DIST of DISCARD_POS    -> discard it
-      b) nearest slot of the card's OWN grid within SNAP_DIST:
-           its own slot -> settle back, empty -> place,
-           another card there -> swap (old card to the discard, face up)
-      c) else -> go home (back to its hand slot or grid slot)
-    """
+    """Let go of a dragged card: a click puts it back, otherwise discard, place/swap or go home.
+    Only decides; send_card moves the card."""
     card["dragging"] = False
     revealed_on_pickup = card["pickup_flip"]
     card["pickup_flip"] = False
@@ -731,11 +655,11 @@ def release_card(card, mouse_pos, state):
                       owner=card["owner"])
         elif not revealed_on_pickup:
             flip_card(card, state["sfx"])
-        return                      # a click is not a drop
+        return
 
     owner = card["owner"]
     player = state["players"][owner]
-    old_zone, old_slot = card["zone"], card["slot"]   # where it came from
+    old_zone, old_slot = card["zone"], card["slot"]
     if old_zone == "hand":
         old_occ = player["hand_occ"]
         home = PLAYER_HAND_SLOTS[owner][old_slot]
@@ -768,11 +692,11 @@ def release_card(card, mouse_pos, state):
             send_card(card, home, old_zone, old_slot, owner=owner)
             return                  # the rules forbid it: go home
         occupant = player["grid_occ"][nearest]
-        old_occ[old_slot] = None                  # the card left its spot
-        if occupant is not None:                  # swap: old card out
+        old_occ[old_slot] = None
+        if occupant is not None:
             send_card(occupant, DISCARD_POS, "discard", None, face_up=True)
             _push_discard(state, occupant)
-        player["grid_occ"][nearest] = card        # the card takes the slot
+        player["grid_occ"][nearest] = card
         send_card(card, slots[nearest], "grid", nearest, owner=owner)
         if rules:
             next_turn(state)
@@ -782,45 +706,32 @@ def release_card(card, mouse_pos, state):
     send_card(card, home, old_zone, old_slot, owner=owner)
 
 
-# ----------------------------------------------------------------------
-# Stage 8 - PLACING, SWAPPING, DISCARDING (issue #16)
-# ----------------------------------------------------------------------
+# Stage 8 - PLACING, SWAPPING, DISCARDING
 SNAP_DIST = 80   # px: how close the mouse must be to a slot or the discard
 
 
 def _distance(a, b):
-    """Straight-line distance between two (x, y) points."""
     return math.hypot(a[0] - b[0], a[1] - b[1])
 
 
 def _push_discard(state, card):
-    """Put a card on top of the discard pile (the newest card is LAST)."""
     state.setdefault("discard", []).append(card)
 
 
 def _home_pos(card):
-    """Screen position of the hand or grid slot the card belongs in."""
     table = PLAYER_HAND_SLOTS if card["zone"] == "hand" else PLAYER_GRID_SLOTS
     return table[card["owner"]][card["slot"]]
 
 
 def send_card(card, target, zone, slot, face_up=None, owner=None):
-    """
-    Perform a decision: the card will GLIDE to target (Stage 9 moves it).
-    zone, slot, face_up and owner are updated with reset_card_zone and NO
-    pos, so the card is not teleported.
-    TRAP: reset_card_zone sets owner to whatever it is given (None by
-    default), so for "hand" and "grid" destinations the caller must pass
-    owner=, or the card loses its owner.
-    """
+    """Make the card glide to target and update its zone, slot and face_up.
+    Pass owner= for hand and grid, or the card loses its owner."""
     reset_card_zone(card, zone, slot=slot, face_up=face_up, owner=owner)
     card["motion"] = "glide"
     card["target"] = list(target)
 
 
-# ----------------------------------------------------------------------
-# Stage 9 - MOVEMENT OVER TIME: GLIDING AND DEALING (issue #17)
-# ----------------------------------------------------------------------
+# Stage 9 - MOVEMENT OVER TIME: GLIDING AND DEALING
 GLIDE = 12           # how fast a gliding card closes the distance
 DEAL_TIME = 0.55     # seconds a dealt card takes to fly
 DEAL_ARC = 130       # px: how high the flight arcs above the straight line
@@ -828,13 +739,7 @@ ARRIVE_DIST = 2      # px: this close to the target = arrived
 
 
 def update_motion(card, dt, mouse_pos, sfx):
-    """
-    Advance ONE card by dt seconds:
-      dragging       -> update_drag (Stage 6)
-      "glide"        -> ease toward target; within ARRIVE_DIST it snaps
-                        there, motion = None, and "place" plays
-      "deal"         -> a DEAL_TIME flight with smoothstep easing and an arc
-    """
+    """Advance one card by dt: dragging, gliding or dealing."""
     if card["dragging"]:
         update_drag(card, mouse_pos, dt)
     elif card["motion"] == "glide":
@@ -844,6 +749,7 @@ def update_motion(card, dt, mouse_pos, sfx):
         if _distance(card["pos"], card["target"]) < ARRIVE_DIST:
             card["pos"] = list(card["target"])
             card["motion"] = None
+            card["wobble_t"] = WOBBLE_TIME
             play(sfx, "place")
     elif card["motion"] == "deal":
         card["t"] += dt
@@ -858,14 +764,22 @@ def update_motion(card, dt, mouse_pos, sfx):
             card["motion"] = None
             play(sfx, "place")
 
+    # the flip spin runs on its own timer, whatever else the card is doing
+    if card["flipping"]:
+        card["flip_t"] += dt
+        if card["flip_t"] >= FLIP_DURATION:
+            card["flipping"] = False
+            card["flip_t"] = 0.0
+
 
 def update_card(card, dt, mouse_pos, sfx):
-    """The per-card step. For now it just calls update_motion."""
+    """Motion first (may change state), then polish (writes only its own fields)."""
+    prev = list(card["pos"])
     update_motion(card, dt, mouse_pos, sfx)
+    update_polish(card, dt, prev)
 
 
 def _start_deal_flight(card, target):
-    """Start a "deal" flight from wherever the card is now to target."""
     card["motion"] = "deal"
     card["t"] = 0.0
     card["start"] = list(card["pos"])
@@ -874,11 +788,7 @@ def _start_deal_flight(card, target):
 
 
 def deal_to_hand(state, player, sfx):
-    """
-    Golf wrapper: deal the top card into the player's hand and fly it
-    there. Sets state["message"] if the deck is empty or the hand is full.
-    Returns the card, or None.
-    """
+    """Deal the top card into the player's hand. Returns the card or None."""
     if not state["deck"]:
         state["message"] = "deck is empty!"
         state["message_t"] = 1.5
@@ -896,10 +806,7 @@ def deal_to_hand(state, player, sfx):
 
 
 def deal_to_grid(state, player, slot, sfx):
-    """
-    Opening deal: the top card goes FACE DOWN into that player's grid slot
-    and flies there. Returns the card, or None if the deck is empty.
-    """
+    """Opening deal: top card face down into a grid slot. Returns the card or None."""
     if not state["deck"]:
         state["message"] = "deck is empty!"
         state["message_t"] = 1.5
@@ -913,11 +820,7 @@ def deal_to_grid(state, player, slot, sfx):
 
 
 def reset_table(state, sfx):
-    """
-    Redeal: new shuffled deck, both players' hands and grids emptied, and
-    one queue job (delay, player, slot) per grid slot, alternating players
-    like a real deal: delay = 0.2 + 0.18 * i.
-    """
+    """Redeal: new shuffled deck, empty hands and grids, one queued deal per grid slot."""
     deck = make_deck()
     shuffle_deck(deck)
     state["cards"] = deck               # every card (drawing order)
@@ -942,33 +845,21 @@ def reset_table(state, sfx):
     play(sfx, "shuffle")
 
 
-# ----------------------------------------------------------------------
-# Stage 11 - THE REAL GAME RULES: FOUR-CARD GOLF (issue #20)
-# ----------------------------------------------------------------------
-# Rules only CALL the earlier stages and read/write the state. They never
-# draw and never move pixels.
+# Stage 11 - THE REAL GAME RULES: FOUR-CARD GOLF
 CARD_VALUES = {"ace": 1, "2": -2, "jack": 10, "queen": 10, "king": 0}
 GRID_COLUMNS = ((0, 2), (1, 3))    # slots 0,1 = top row; 2,3 = bottom row
 
 
 def card_value(card):
-    """
-    Golf points of one card: Ace 1, Two -2, 3-10 face value,
-    Jack and Queen 10, King 0.
-    """
+    """Golf points: Ace 1, Two -2, 3-10 face value, Jack and Queen 10, King 0."""
     rank = card["rank"]
     if rank in CARD_VALUES:
         return CARD_VALUES[rank]
-    return int(rank)                 # "3" ... "10"
+    return int(rank)
 
 
 def score_grid(cards):
-    """
-    Add up one player's grid (their grid_occ list; None = empty slot, 0
-    points). A pair of equal ranks in the same column scores 0 for that
-    column. Counts every card, face up or down: at the end of a hole all
-    cards are turned over before scoring.
-    """
+    """Score one grid (grid_occ list). A same-rank pair in a column scores 0 for it."""
     total = 0
     for top, bottom in GRID_COLUMNS:
         upper, lower = cards[top], cards[bottom]
@@ -982,15 +873,8 @@ def score_grid(cards):
 
 
 def legal_move(state, card, target):
-    """
-    May this card be dropped on target = (zone, slot)?
-    Only the current player's held card, and only in the "place" phase.
-      ("grid", slot)    any slot of the player's own grid (a swap)
-      ("discard", None) only if the card came from the DECK; a card taken
-                        from the discard pile must be swapped in
-      ("hand", None)    going home is always fine
-    Release_card sends the card home when this says False.
-    """
+    """May this card go to target = (zone, slot)? Only the current player's held card,
+    in the place phase. A card taken from the discard pile cannot be discarded."""
     if state["phase"] != "place":
         return False
     if card["owner"] != state["current"] or card["zone"] != "hand":
@@ -1004,16 +888,11 @@ def legal_move(state, card, target):
 
 
 def _all_face_up(cards):
-    """True if every slot holds a face-up card."""
     return all(c is not None and c["face_up"] for c in cards)
 
 
 def next_turn(state):
-    """
-    End the current player's turn. If they now have all cards face up, they
-    END the hole and everyone else gets one final turn; when the turn
-    comes back round to the ender the phase becomes "round_over".
-    """
+    """End the turn. Whoever turns their last card up ends the hole; the others get one more turn."""
     me = state["current"]
     if state["ender"] is None and _all_face_up(state["players"][me]["grid_occ"]):
         state["ender"] = me
@@ -1027,16 +906,11 @@ def next_turn(state):
 
 
 def round_over(state):
-    """True when the final turns of this hole are finished."""
     return state["phase"] == "round_over"
 
 
 def end_round(state):
-    """
-    Score the hole: each player's score is score_grid of their grid, added
-    to their running total, then the hole counter goes up. (Turning every
-    card face up is the wiring's job, so it can be seen on screen.)
-    """
+    """Score the hole into each player's total and advance the hole counter."""
     for player in state["players"]:
         player["score"] = score_grid(player["grid_occ"])
         player["total"] += player["score"]
@@ -1046,15 +920,11 @@ def end_round(state):
 
 
 def game_over(state):
-    """True once all HOLES holes have been scored."""
     return state["hole"] > HOLES
 
 
 def winner(state):
-    """
-    Index of the player with the LOWEST total once the game is over, or
-    None if it is not over yet or the best total is tied.
-    """
+    """Index of the lowest total after the last hole, or None (not over or tied)."""
     if not game_over(state):
         return None
     totals = [player["total"] for player in state["players"]]
@@ -1064,27 +934,22 @@ def winner(state):
     return totals.index(best)
 
 
-# --- Stage 11 wiring: how a click or key plays a turn -------------------
-# handle_input only dispatches; these functions hold the Golf flow. They
-# call the Stage 2 and 6-9 functions and the rule functions above.
+# Stage 11 wiring: how a click or key plays a turn
 REVEAL_COUNT = 2                   # cards each player turns up to start
 YELLOW = (255, 230, 120)
 
 
 def _announce_turn(state):
-    """Show the "hand over the mouse" banner for the current player."""
     state["message"] = f"PLAYER {state['current'] + 1}'S TURN"
     state["message_t"] = 1.5
 
 
 def _over_pile(pos, center):
-    """True if the point is on the card-sized area around a pile."""
     return (abs(pos[0] - center[0]) <= CARD_SIZE[0] / 2
             and abs(pos[1] - center[1]) <= CARD_SIZE[1] / 2)
 
 
 def new_game(state, sfx):
-    """Start over: totals and the hole counter back to 0, then a fresh deal."""
     for player in state["players"]:
         player["score"] = 0
         player["total"] = 0
@@ -1093,7 +958,7 @@ def new_game(state, sfx):
 
 
 def start_discard(state, sfx):
-    """Turn the top card of the deck face up to start the discard pile."""
+    """Turn the top deck card face up to start the discard pile."""
     if not state["deck"]:
         return None
     card = state["deck"].pop(0)
@@ -1103,10 +968,7 @@ def start_discard(state, sfx):
 
 
 def refill_deck(state):
-    """
-    If the deck has run out, shuffle the discard pile (except its top card)
-    back in as a new face-down deck. Returns True if the deck has cards.
-    """
+    """If the deck is empty, shuffle the discard pile (except its top) back in. Returns True if the deck has cards."""
     if state["deck"]:
         return True
     if len(state["discard"]) <= 1:
@@ -1122,12 +984,7 @@ def refill_deck(state):
 
 
 def reveal_card(state, card, sfx):
-    """
-    Reveal phase: the current player turns one of their own face-down grid
-    cards up. After REVEAL_COUNT cards the turn passes; once every player
-    has revealed, the discard pile is started and play begins.
-    Returns True if the card was turned.
-    """
+    """Reveal phase: turn one of the current player's face-down cards. Returns True if turned."""
     me = state["current"]
     if (state["phase"] != "reveal" or card["owner"] != me
             or card["zone"] != "grid" or card["face_up"]
@@ -1145,7 +1002,6 @@ def reveal_card(state, card, sfx):
 
 
 def draw_from_deck(state, sfx):
-    """Draw phase: take the top of the deck into the player's hand."""
     if state["phase"] != "draw":
         return None
     refill_deck(state)
@@ -1158,7 +1014,6 @@ def draw_from_deck(state, sfx):
 
 
 def draw_from_discard(state, sfx):
-    """Draw phase: take the top of the discard pile into the hand."""
     if state["phase"] != "draw" or not state["discard"]:
         return None
     me = state["current"]
@@ -1175,7 +1030,7 @@ def draw_from_discard(state, sfx):
 
 
 def golf_press(state, pos, sfx):
-    """What a left click at pos means, depending on the phase."""
+    """What a left click means in the current phase."""
     phase = state["phase"]
     me = state["current"]
     if phase == "scored":
@@ -1196,7 +1051,6 @@ def golf_press(state, pos, sfx):
 
 
 def golf_space(state, sfx):
-    """SPACE: draw from the deck, or go on to the next hole."""
     if state["phase"] == "draw":
         draw_from_deck(state, sfx)
     elif state["phase"] == "scored":
@@ -1204,10 +1058,7 @@ def golf_space(state, sfx):
 
 
 def finish_hole(state, sfx):
-    """
-    The last turn is done: turn every face-down card up, score the hole
-    (end_round) and wait for a click or SPACE (phase "scored").
-    """
+    """Turn every card face up and score the hole."""
     for player in state["players"]:
         for card in player["grid_occ"]:
             if card is not None and not card["face_up"]:
@@ -1217,7 +1068,6 @@ def finish_hole(state, sfx):
 
 
 def continue_after_hole(state, sfx):
-    """After the scores: the next hole, or a whole new game if it is over."""
     state["queue"] = []
     if game_over(state):
         new_game(state, sfx)
@@ -1226,7 +1076,7 @@ def continue_after_hole(state, sfx):
 
 
 def golf_hud_lines(state):
-    """The (text, color) lines for the Golf panel at the top right."""
+    """(text, color) lines for the Golf panel."""
     phase = state["phase"]
     me = state["current"]
     hole = state["hole"] - 1 if phase == "scored" else state["hole"]
@@ -1266,12 +1116,72 @@ def golf_hud_lines(state):
 
 
 def draw_golf_hud(screen, font, lines):
-    """Draw the Golf panel, right-aligned in the free top-right corner."""
     y = 10
     for text, color in lines:
         surf = font.render(text, True, color)
         screen.blit(surf, surf.get_rect(topright=(WINDOW_SIZE[0] - 12, y)))
         y += surf.get_height() + 2
+
+
+# Stage 12 - POLISH, "GAME JUICE"
+# RULE: polish may READ the game state but never changes pos, zone, slot
+# or face_up. update_polish only writes vel, bend, tilt, lift and wobble_t.
+FLIP_DURATION = 0.35     # seconds a full flip spin takes
+WOBBLE_TIME = 0.45       # seconds a landed card wobbles
+BEND_SCALE_DIV = 2500.0  # sideways speed (px/s) that gives the full bend
+MAX_BEND = 18.0          # px of strip shear at full speed
+TILT_SCALE = 0.045       # degrees of lean per px/s of sideways speed
+MAX_TILT = 18.0          # degrees
+
+
+def lift_target(card):
+    """How high the card should be above the table right now, from its motion."""
+    if card["motion"] == "deal":
+        p = min(card["t"] / DEAL_TIME, 1.0)
+        return card["arc"] * math.sin(math.pi * p) + 20.0
+    if card["motion"] == "glide":
+        return min(40.0, _distance(card["pos"], card["target"]) * 0.12)
+    lift = 34.0 if card["dragging"] else 0.0
+    if card["flipping"]:
+        p = min(card["flip_t"] / FLIP_DURATION, 1.0)
+        lift += 44.0 * math.sin(math.pi * p)
+    return lift
+
+
+_resting_shadow = None     # built once, shared by every resting card
+
+
+def get_resting_shadow():
+    global _resting_shadow
+    if _resting_shadow is None:
+        w, h = CARD_SIZE
+        small = pygame.Surface((max(int(w / 1.6), 6), max(int(h / 1.6), 6)),
+                               pygame.SRCALPHA)
+        pygame.draw.rect(small, (0, 0, 0, 90), small.get_rect(),
+                         border_radius=max(small.get_width() // 10, 2))
+        _resting_shadow = pygame.transform.smoothscale(
+            small, (max(int(w * 0.92), 6), max(int(h * 0.92), 6)))
+    return _resting_shadow
+
+
+def update_polish(card, dt, prev):
+    """Ease vel, bend, tilt, lift and wobble toward their targets.
+    Writes only those fields, never pos, zone, slot or face_up."""
+    card["vel"] = [(card["pos"][i] - prev[i]) / max(dt, 1e-6)
+                   for i in (0, 1)]
+    bend_target = max(-1.0, min(1.0, card["vel"][0] / BEND_SCALE_DIV)) \
+        * MAX_BEND
+    card["bend"] += (bend_target - card["bend"]) * blend(10.0, dt)
+
+    tilt_target = max(-MAX_TILT, min(MAX_TILT, card["vel"][0] * TILT_SCALE))
+    if card["wobble_t"] > 0.0:
+        card["wobble_t"] = max(card["wobble_t"] - dt, 0.0)
+        q = 1.0 - card["wobble_t"] / WOBBLE_TIME
+        tilt_target += (math.sin(q * math.pi * 2.5) * 7.0
+                        * math.sin(q * math.pi))
+    card["tilt"] += (tilt_target - card["tilt"]) * blend(12.0, dt)
+
+    card["lift"] += (lift_target(card) - card["lift"]) * blend(14.0, dt)
 
 
 if __name__ == "__main__":
