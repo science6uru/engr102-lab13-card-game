@@ -31,6 +31,7 @@ PLAYER_HAND_SLOTS = [[(500, 482)],
 
 
 def make_card(suit, rank, zone="deck", pos=DECK_POS, face_up=False):
+""" makes card """
     card = {"suit": suit, "rank": rank,
             "pos": list(pos),  # store as a list, not the original tuple
             "face_up": face_up, "zone": zone, "slot": None, "owner": None,
@@ -54,6 +55,7 @@ def make_card(suit, rank, zone="deck", pos=DECK_POS, face_up=False):
 
 
 def make_deck():
+""" makes deck """
     deck = []
     for suit in SUITS:
         for rank in RANKS:
@@ -84,6 +86,7 @@ def reset_card_zone(card, zone, pos=None, slot=None, face_up=None,
 
 
 def shuffle_deck(deck):
+""" shuffles deck """
     random.shuffle(deck)
 
 
@@ -138,10 +141,12 @@ ASSETS_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)),
 
 
 def scale_card(surface):
+""" returns the picture resized to CARD_SIZE. Use pygame.transform.smoothscale. """
     return pygame.transform.smoothscale(surface, CARD_SIZE)
 
 
 def load_card_face(suit, rank):
+""" loads one front image from the folder, then runs it through scale_card. """
     filename = f"{rank} of {suit}.png"
     path = os.path.join(ASSETS_DIR, "cards", "fronts", suit, filename)
 
@@ -150,6 +155,7 @@ def load_card_face(suit, rank):
 
 
 def load_deck_faces():
+""" returns a dict {(suit, rank): Surface} by calling load_card_face for all 52 combinations (a dict comprehension works well). Afterwards, finding any card's picture is a single lookup: faces[("hearts", "queen")]. """
     return {
         (suit, rank): load_card_face(suit, rank)
         for suit in SUITS
@@ -158,6 +164,7 @@ def load_deck_faces():
 
 
 def load_card_back(color="blue"):
+""" loads card back <color>.png and scales it to CARD_SIZE. """
     filename = f"card back {color}.png"
     path = os.path.join(ASSETS_DIR, "cards", "backs", filename)
 
@@ -166,6 +173,7 @@ def load_card_back(color="blue"):
 
 
 def load_sfx():
+""" sounds """
     kinds = [
         "slide",
         "place",
@@ -245,6 +253,8 @@ def create_display():
 
 
 def card_rect(card):
+"""  returns the pygame.Rect a card covers:
+CARD_SIZE big, centered on card["pos"] """
     rect = pygame.Rect((0, 0), CARD_SIZE)
     rect.center = (round(card["pos"][0]), round(card["pos"][1]))
     return rect
@@ -416,6 +426,7 @@ DEAL_PICK_DIST = 90   # px around DECK_POS that counts as clicking the deck
 
 
 def next_player(state):
+""" move to next player """
     state["current"] = (state["current"] + 1) % len(state["players"])
 
 
@@ -518,6 +529,7 @@ def _bring_window_to_front():
 
 
 def main(frames=None):
+         """ main """
     pygame.init()
     screen, refresh_hz, vsynced = create_display()
     pygame.display.set_caption("Golf - 2 players")
@@ -711,10 +723,12 @@ SNAP_DIST = 80   # px: how close the mouse must be to a slot or the discard
 
 
 def _distance(a, b):
+""" finds distance """
     return math.hypot(a[0] - b[0], a[1] - b[1])
 
 
 def _push_discard(state, card):
+         """ move to discard """
     state.setdefault("discard", []).append(card)
 
 
@@ -888,6 +902,7 @@ def legal_move(state, card, target):
 
 
 def _all_face_up(cards):
+         """ all cards faced up """
     return all(c is not None and c["face_up"] for c in cards)
 
 
@@ -906,6 +921,7 @@ def next_turn(state):
 
 
 def round_over(state):
+         """ round ends """
     return state["phase"] == "round_over"
 
 
@@ -920,6 +936,7 @@ def end_round(state):
 
 
 def game_over(state):
+""" game ends """
     return state["hole"] > HOLES
 
 
@@ -940,16 +957,19 @@ YELLOW = (255, 230, 120)
 
 
 def _announce_turn(state):
+         """ displays whos turn it is """
     state["message"] = f"PLAYER {state['current'] + 1}'S TURN"
     state["message_t"] = 1.5
 
 
 def _over_pile(pos, center):
+""" finding cursor position if in rectangle """
     return (abs(pos[0] - center[0]) <= CARD_SIZE[0] / 2
             and abs(pos[1] - center[1]) <= CARD_SIZE[1] / 2)
 
 
 def new_game(state, sfx):
+         """ start new game """
     for player in state["players"]:
         player["score"] = 0
         player["total"] = 0
@@ -1002,6 +1022,7 @@ def reveal_card(state, card, sfx):
 
 
 def draw_from_deck(state, sfx):
+""" draw from deck """
     if state["phase"] != "draw":
         return None
     refill_deck(state)
@@ -1014,6 +1035,7 @@ def draw_from_deck(state, sfx):
 
 
 def draw_from_discard(state, sfx):
+""" draw from discard"""
     if state["phase"] != "draw" or not state["discard"]:
         return None
     me = state["current"]
@@ -1051,6 +1073,7 @@ def golf_press(state, pos, sfx):
 
 
 def golf_space(state, sfx):
+         """ hecks the current stage of the game in the state dictionary and triggers the matching action along with its sound effect (sfx). """
     if state["phase"] == "draw":
         draw_from_deck(state, sfx)
     elif state["phase"] == "scored":
@@ -1068,6 +1091,7 @@ def finish_hole(state, sfx):
 
 
 def continue_after_hole(state, sfx):
+         """ advances the Golf card game after a round """
     state["queue"] = []
     if game_over(state):
         new_game(state, sfx)
@@ -1116,6 +1140,7 @@ def golf_hud_lines(state):
 
 
 def draw_golf_hud(screen, font, lines):
+""" draws a vertical, right-aligned heads-up display (HUD) in the top-right corner of a Pygame window """
     y = 10
     for text, color in lines:
         surf = font.render(text, True, color)
@@ -1152,6 +1177,7 @@ _resting_shadow = None     # built once, shared by every resting card
 
 
 def get_resting_shadow():
+""" creates shadow """
     global _resting_shadow
     if _resting_shadow is None:
         w, h = CARD_SIZE
