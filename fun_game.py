@@ -1,3 +1,19 @@
+# By submitting this assignment, I agree to the following:
+#   "Aggies do not lie, cheat, or steal, or tolerate those who do."
+#   "I have not given or received any unauthorized aid on this assignment."
+#
+# Names:        Calvin Heiman
+#               Kiahley Vann
+#	       Andrew Owen
+#               Jake Brennan
+#
+# Section:      ENGR 102-216
+# Assignment:   LAB Topic 13 (Team)
+# Date:         17 November 2026
+
+# As a team, we have gone through all required sections of the 
+# tutorial, and each team member understands the material
+
 import math
 import random
 import os
