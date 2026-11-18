@@ -25,10 +25,25 @@ PLAYER_HAND_SLOTS = [[(760, 525)],    # player 0
 
 
 def make_card(suit, rank, zone="deck", pos=DECK_POS, face_up=False):
-    """Return ONE card as a dict"""
-    raise NotImplementedError("Stage 1: make_card")
+    """
+    creates the card with its different properties
+    """
+    card = {"suit": suit, "rank": rank,
+            "pos": list(pos),  # store as a list, not the original tuple
+            "face_up": face_up, "zone": zone, "slot": None, "owner": None,
+            "motion": None, "target": [0.0, 0.0]}
+    return card
 
 
 def make_deck():
-    """Return a list of 52 card dicts, one for every suit x rank."""
-    raise NotImplementedError("Stage 1: make_deck")
+    """
+    creates 52 deck of cards
+    returns a list of 52 card dicts, one for every suit and every rank.
+    """
+    deck = []
+    for suit in SUITS:
+        for rank in RANKS:
+            card = make_card(suit, rank)
+            deck.append(card)
+
+    return deck
