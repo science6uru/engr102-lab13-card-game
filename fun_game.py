@@ -1,10 +1,15 @@
 import math
 import random
 import os
+import sys
 import glob
 import time
 import statistics
 import pygame
+
+# macOS: let the click that focuses the window also reach the game, instead
+# of being swallowed. (Must be set before pygame opens the window.)
+os.environ.setdefault("SDL_MOUSE_FOCUS_CLICKTHROUGH", "1")
 
 WINDOW_SIZE = (1000, 660)
 CARD_SIZE   = (90, 126)        # smaller so two grids fit on one screen
@@ -395,24 +400,51 @@ def draw_hud(screen, font, message, lines):
         screen.blit(surf, surf.get_rect(center=(WINDOW_SIZE[0] // 2, 60)))
 
 
+DEAL_PICK_DIST = 90   # px around DECK_POS that counts as clicking the deck
+
+
+def next_player(state):
+    """Switch whose turn it is. (Stage 11's next_turn builds on this.)"""
+    state["current"] = (state["current"] + 1) % len(state["players"])
+
+
 def handle_input(events, state, sfx, mouse_pos):
-    """False = quit. Stage 6-7: left mouse button grabs and releases
-    cards (Stage 10 adds the deck click, SPACE, TAB and R)."""
+    """
+    Switchboard: send each event to the right function. False = quit.
+      ESC / window close -> quit        SPACE / click the deck -> deal
+      TAB -> next player                R -> redeal
+      left mouse down -> grab a card    left mouse up -> release it
+    Mouse events use their OWN position (event.pos), because mouse_pos
+    was read before the events and can be a frame behind the click.
+    """
     for event in events:
         if event.type == pygame.QUIT:
             return False
-        if event.type == pygame.KEYDOWN and event.key == pygame.K_ESCAPE:
-            return False
-        if event.type == pygame.MOUSEBUTTONDOWN and event.button == 1:
-            # only the current player can grab (owner filter)
-            picked = top_card_at(state["cards"], mouse_pos,
-                                 owner=state["current"])
-            if picked is not None:
-                begin_drag(picked, mouse_pos, sfx)
-        if event.type == pygame.MOUSEBUTTONUP and event.button == 1:
+        if event.type == pygame.KEYDOWN:
+            if event.key == pygame.K_ESCAPE:
+                return False
+            if event.key == pygame.K_SPACE:
+                deal_to_hand(state, state["current"], sfx)
+            elif event.key == pygame.K_TAB:
+                next_player(state)
+            elif event.key == pygame.K_r:
+                state["queue"] = []
+                reset_table(state, sfx)
+        elif event.type == pygame.MOUSEBUTTONDOWN and event.button == 1:
+            pos = getattr(event, "pos", mouse_pos)
+            if _distance(pos, DECK_POS) <= DEAL_PICK_DIST:
+                deal_to_hand(state, state["current"], sfx)
+            else:
+                # only the current player can grab (owner filter)
+                picked = top_card_at(state["cards"], pos,
+                                     owner=state["current"])
+                if picked is not None:
+                    begin_drag(picked, pos, sfx)
+        elif event.type == pygame.MOUSEBUTTONUP and event.button == 1:
+            pos = getattr(event, "pos", mouse_pos)
             for held in state["cards"]:
                 if held["dragging"]:
-                    release_card(held, mouse_pos, state)
+                    release_card(held, pos, state)
     return True
 
 
@@ -463,11 +495,29 @@ def _pacing_lines(frame_times, vsynced, refresh_hz, using_timer):
     return lines, fps, mean * 1000, spread
 
 
+def _bring_window_to_front():
+    """
+    macOS only. A window opened from a terminal or VS Code often starts
+    behind the app that launched it and ignores the mouse until you click
+    off and back on. This makes the game the active app right away.
+    Needs pyobjc (already in the .venv); does nothing if it is missing, on
+    other systems, or in headless tests.
+    """
+    if sys.platform != "darwin" or pygame.display.get_driver() != "cocoa":
+        return
+    try:
+        from AppKit import NSApplication
+        NSApplication.sharedApplication().activateIgnoringOtherApps_(True)
+    except Exception:
+        pass
+
+
 def main(frames=None):
     """The game window, assets, state, nd the loop."""
     pygame.init()
     screen, refresh_hz, vsynced = create_display()
     pygame.display.set_caption("Golf - 2 players")
+    _bring_window_to_front()
     font = pygame.font.Font(None, 26)
     faces = load_deck_faces()
     back = load_card_back()
