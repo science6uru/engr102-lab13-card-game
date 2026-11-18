@@ -1,3 +1,4 @@
+import math
 import random
 import os
 import glob
@@ -35,7 +36,13 @@ def make_card(suit, rank, zone="deck", pos=DECK_POS, face_up=False):
     card = {"suit": suit, "rank": rank,
             "pos": list(pos),  # store as a list, not the original tuple
             "face_up": face_up, "zone": zone, "slot": None, "owner": None,
-            "motion": None, "target": [0.0, 0.0]}
+            "motion": None, "target": [0.0, 0.0],
+            # Stage 6 (issue #8): dragging with the mouse
+            "dragging": False,
+            "drag_offset": (0.0, 0.0),   # where on the card the mouse grabbed it
+            "press_pos": (0.0, 0.0),     # where the mouse was on click
+            # Stage 7 (issue #14): click vs drag
+            "pickup_flip": False}        # did begin_drag already flip it?
     return card
 
 
@@ -385,17 +392,31 @@ def draw_hud(screen, font, message, lines):
 
 
 def handle_input(events, state, sfx, mouse_pos):
-    """False = quit."""
+    """False = quit. Stage 6-7: left mouse button grabs and releases
+    cards (Stage 10 adds the deck click, SPACE, TAB and R)."""
     for event in events:
         if event.type == pygame.QUIT:
             return False
         if event.type == pygame.KEYDOWN and event.key == pygame.K_ESCAPE:
             return False
+        if event.type == pygame.MOUSEBUTTONDOWN and event.button == 1:
+            # only the current player can grab (owner filter)
+            picked = top_card_at(state["cards"], mouse_pos,
+                                 owner=state["current"])
+            if picked is not None:
+                begin_drag(picked, mouse_pos, sfx)
+        if event.type == pygame.MOUSEBUTTONUP and event.button == 1:
+            for held in state["cards"]:
+                if held["dragging"]:
+                    release_card(held, mouse_pos, state)
     return True
 
 
 def update(state, dt, mouse_pos, sfx):
-    """Stages 6-9 fill this in."""
+    """Stage 6: every dragged card follows the mouse. Stages 8-9 add more."""
+    for card in state["cards"]:
+        if card["dragging"]:
+            update_drag(card, mouse_pos, dt)
 
 
 def _pacing_lines(frame_times, vsynced, refresh_hz, using_timer):
@@ -490,6 +511,100 @@ def main(frames=None):
     print(f"pacing: {frame_count} frames, {fps:.1f} fps, "
           f"{mean_ms:.2f} ms mean, {sd_ms:.2f} ms sd, {mode}")
     pygame.quit()
+
+
+# ----------------------------------------------------------------------
+# Stage 6 - PICKING CARDS UP WITH THE MOUSE (issue #8)
+# ----------------------------------------------------------------------
+DRAG_FOLLOW = 26     # how fast a dragged card catches up with the mouse
+
+
+def blend(rate, dt):
+    """
+    How much of the remaining distance to cover this frame (0 to 1).
+    1 - e^(-rate * dt) takes the same REAL time at 30, 60 or 240 fps.
+    """
+    return 1 - math.exp(-rate * dt)
+
+
+def top_card_at(cards, point, owner=None):
+    """
+    Returns the card the player clicked, or None.
+    Looks from the LAST card to the first (the last is drawn on top).
+    Only cards in zone "hand" or "grid" that are not moving count.
+    If owner is 0 or 1, only that player's cards count.
+    """
+    for card in reversed(cards):
+        if card["zone"] not in ("hand", "grid"):
+            continue
+        if card["motion"] is not None:
+            continue
+        if owner is not None and card["owner"] != owner:
+            continue
+        if card_rect(card).collidepoint(point):
+            return card
+    return None
+
+
+def begin_drag(card, mouse_pos, sfx):
+    """
+    Pick a card up: remember where on the card it was grabbed (so it does
+    not jump to the mouse), where the mouse was, and play "slide".
+    Stage 7: a face-down card is flipped as it is lifted (revealed).
+    """
+    card["dragging"] = True
+    card["drag_offset"] = (card["pos"][0] - mouse_pos[0],
+                           card["pos"][1] - mouse_pos[1])
+    card["press_pos"] = tuple(mouse_pos)
+    card["pickup_flip"] = not card["face_up"]
+    if card["pickup_flip"]:
+        flip_card(card, sfx)
+    play(sfx, "slide")
+
+
+def update_drag(card, mouse_pos, dt):
+    """
+    Each frame, move the card a FRACTION of the way to where it should
+    be (mouse + grab offset). It eases toward the cursor, never snaps.
+    """
+    target_x = mouse_pos[0] + card["drag_offset"][0]
+    target_y = mouse_pos[1] + card["drag_offset"][1]
+    k = blend(DRAG_FOLLOW, dt)
+    card["pos"][0] += (target_x - card["pos"][0]) * k
+    card["pos"][1] += (target_y - card["pos"][1]) * k
+
+
+# ----------------------------------------------------------------------
+# Stage 7 - FLIPPING AND CLICKING (issue #14)
+# ----------------------------------------------------------------------
+CLICK_DIST = 8   # px: moved less than this since the press = a click
+
+
+def flip_card(card, sfx):
+    """
+    Turns the card over IMMEDIATELY (rules can read face_up in the same
+    step) and plays the "shove" sound.
+    """
+    card["face_up"] = not card["face_up"]
+    play(sfx, "shove")
+
+
+def release_card(card, mouse_pos, state):
+    """
+    Let go of a dragged card. First part only (Stage 8 adds placing,
+    swapping and discarding):
+    moved less than CLICK_DIST since the press = a CLICK, so flip the card,
+    unless begin_drag already flipped it (pickup_flip), then do NOT flip
+    it back.
+    """
+    card["dragging"] = False
+    revealed_on_pickup = card["pickup_flip"]
+    card["pickup_flip"] = False
+
+    moved = math.hypot(mouse_pos[0] - card["press_pos"][0],
+                       mouse_pos[1] - card["press_pos"][1])
+    if moved < CLICK_DIST and not revealed_on_pickup:
+        flip_card(card, state["sfx"])
 
 
 if __name__ == "__main__":
