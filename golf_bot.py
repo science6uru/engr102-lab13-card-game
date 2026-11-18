@@ -1,5 +1,4 @@
-"""
-Play fun_game's Golf against a bot.
+"""Play fun_game's Golf against a bot.
 
     python golf_bot.py                 you vs the bot (bot is player 2)
     python golf_bot.py --level easy    bot sometimes plays badly
@@ -13,12 +12,62 @@ import pygame
 
 import fun_game as g
 
-EXPECTED = 5.5       # average value of an unknown (face-down) card
+EXPECTED = 5.5       # fallback average value of an unknown (face-down) card
 HIDDEN_BONUS = 0.2   # small push to turn face-down cards up
 
+# Statistics of a standard single 52-card deck used for inference.
+# Scoring: A=1, 2=-2, 3-10=face, J=10, Q=10, K=0  →  4 suits × 71 = 284.
+DECK_SIZE = 52
+DECK_SUM = 284
+RANKS_PER_DECK = 4
 
-def estimate_grid(cards):
-    """Estimated score of a grid: face-down cards count EXPECTED."""
+
+class BotContext:
+    """Per-turn snapshot of what the bot can actually see.
+
+    Counts every card visible to `seat` (both face-up grids, the whole discard
+    pile, and the bot's own hand) so `estimate_grid` can use the true average
+    value of the *unseen* cards instead of a fixed constant, and can reason
+    about how likely a hidden card is to complete a column pair.
+    """
+
+    def __init__(self, state, seat):
+        self.seat = seat
+        self.rank_seen = {}
+        self.seen_count = 0
+        self.seen_sum = 0.0
+        for player in state["players"]:
+            for card in player["grid_occ"]:
+                if card is not None and card["face_up"]:
+                    self._observe(card)
+        for card in state["discard"]:
+            self._observe(card)
+        for card in state["players"][seat]["hand_occ"]:
+            if card is not None:
+                self._observe(card)
+
+        self.unseen_count = max(1, DECK_SIZE - self.seen_count)
+        unseen_sum = DECK_SUM - self.seen_sum
+        # Clamp to the legal value range so a damaged deck size can't blow up.
+        self.avg = max(-2.0, min(10.0, unseen_sum / self.unseen_count))
+
+    def _observe(self, card):
+        self.seen_count += 1
+        self.seen_sum += g.card_value(card)
+        rank = card.get("rank")
+        if rank is not None:
+            self.rank_seen[rank] = self.rank_seen.get(rank, 0) + 1
+
+    def remaining(self, rank):
+        return max(0, RANKS_PER_DECK - self.rank_seen.get(rank, 0))
+
+    def pair_prob(self, rank):
+        """Probability a random unseen card has the given rank."""
+        return self.remaining(rank) / self.unseen_count
+
+
+def estimate_grid(cards, ctx=None):
+    avg = ctx.avg if ctx is not None else EXPECTED
     total = 0.0
     for top, bottom in g.GRID_COLUMNS:
         upper, lower = cards[top], cards[bottom]
@@ -26,21 +75,34 @@ def estimate_grid(cards):
                 and upper["face_up"] and lower["face_up"]
                 and upper["rank"] == lower["rank"]):
             continue
+        if ctx is not None and upper is not None and lower is not None:
+            u_up, l_up = upper["face_up"], lower["face_up"]
+            if u_up and not l_up:
+                p = ctx.pair_prob(upper["rank"])
+                v = g.card_value(upper)
+                # E[column] = (1 - p) * (V + avg) = V + avg*(1-p) - p*V
+                total += v + avg * (1.0 - p) - p * v
+                continue
+            if l_up and not u_up:
+                p = ctx.pair_prob(lower["rank"])
+                v = g.card_value(lower)
+                total += v + avg * (1.0 - p) - p * v
+                continue
         for card in (upper, lower):
             if card is None:
                 continue
-            total += g.card_value(card) if card["face_up"] else EXPECTED
+            total += g.card_value(card) if card["face_up"] else avg
     return total
 
 
-def best_slot(grid, incoming):
+def best_slot(grid, incoming, ctx=None):
     """Returns (slot, gain): where `incoming` lowers the estimated score most."""
-    now = estimate_grid(grid)
+    now = estimate_grid(grid, ctx)
     best_index, best_gain = 0, None
     for slot in range(len(grid)):
         trial = list(grid)
         trial[slot] = incoming
-        gain = now - estimate_grid(trial)
+        gain = now - estimate_grid(trial, ctx)
         if grid[slot] is not None and not grid[slot]["face_up"]:
             gain += HIDDEN_BONUS
         if best_gain is None or gain > best_gain:
@@ -117,21 +179,52 @@ class GolfBot:
             self._flip(state, sfx)
 
     def _reveal(self, state, sfx):
+        """Prefer revealing from a column that has no face-up card yet.
+
+        That leaves a face-down partner behind which can later be flipped for
+        free after discarding from the deck, giving a real chance of pairing
+        the column.
+        """
         grid = state["players"][self.seat]["grid_occ"]
-        hidden = [c for c in grid if c is not None and not c["face_up"]]
-        if hidden:
-            g.reveal_card(state, self.rng.choice(hidden), sfx)
+        candidates = []
+        for top, bottom in g.GRID_COLUMNS:
+            col_has_up = any(
+                grid[i] is not None and grid[i]["face_up"] for i in (top, bottom)
+            )
+            if col_has_up:
+                continue
+            for i in (top, bottom):
+                if grid[i] is not None and not grid[i]["face_up"]:
+                    candidates.append(grid[i])
+        if not candidates:
+            candidates = [c for c in grid if c is not None and not c["face_up"]]
+        if candidates:
+            g.reveal_card(state, self.rng.choice(candidates), sfx)
+
+    def _should_knock(self, state, ctx):
+        if self.cfg["knock_at"] is None or state["ender"] is not None:
+            return False
+        my_est = estimate_grid(state["players"][self.seat]["grid_occ"], ctx)
+        opp_est = estimate_grid(state["players"][1 - self.seat]["grid_occ"], ctx)
+        # If the opponent is clearly ahead, don't knock — keep trying to improve.
+        if opp_est + 2 < my_est:
+            return False
+        # Comfortably low score: take the risk-free win.
+        if my_est <= self.cfg["knock_at"]:
+            return True
+        # Far enough ahead that the opponent's one final turn (~3 points of
+        # expected improvement) shouldn't be able to overtake.
+        return my_est + 4 <= opp_est
 
     def _draw(self, state, sfx):
         grid = state["players"][self.seat]["grid_occ"]
-        knock_at = self.cfg["knock_at"]
-        if (knock_at is not None and state["ender"] is None
-                and estimate_grid(grid) <= knock_at):
+        ctx = BotContext(state, self.seat)
+        if self._should_knock(state, ctx):
             g.knock(state, sfx)
             return
         take = False
         if state["discard"]:
-            _, gain = best_slot(grid, state["discard"][-1])
+            _, gain = best_slot(grid, state["discard"][-1], ctx)
             take = gain >= self.cfg["take_gain"]
             if self.rng.random() < self.cfg["mistakes"]:
                 take = self.rng.random() < 0.5
@@ -141,12 +234,31 @@ class GolfBot:
             g.draw_from_discard(state, sfx)
 
     def _flip(self, state, sfx):
-        """After discarding a deck card the flip is optional. This simple bot
-        always takes it and flips a random face-down card."""
+        """Flip the face-down card that has the best chance of completing a pair.
+
+        The expected benefit is pair_probability x (partner's value + average
+        hidden value) — i.e. how much the estimate drops if the pair lands.
+        Falls back to a random hidden card when no column is eligible.
+        """
         grid = state["players"][self.seat]["grid_occ"]
-        hidden = [c for c in grid if c is not None and not c["face_up"]]
-        if hidden:
-            g.flip_after_discard(state, self.rng.choice(hidden), sfx)
+        ctx = BotContext(state, self.seat)
+        best_card, best_score = None, -1.0
+        for top, bottom in g.GRID_COLUMNS:
+            for i, j in ((top, bottom), (bottom, top)):
+                card, partner = grid[i], grid[j]
+                if card is None or card["face_up"]:
+                    continue
+                if partner is None or not partner["face_up"]:
+                    continue
+                p = ctx.pair_prob(partner["rank"])
+                benefit = p * (g.card_value(partner) + ctx.avg)
+                if benefit > best_score:
+                    best_score, best_card = benefit, card
+        if best_card is None:
+            hidden = [c for c in grid if c is not None and not c["face_up"]]
+            best_card = self.rng.choice(hidden) if hidden else None
+        if best_card is not None:
+            g.flip_after_discard(state, best_card, sfx)
         else:
             g.skip_flip(state)
 
@@ -157,7 +269,8 @@ class GolfBot:
             return
         held = held[0]
         grid = player["grid_occ"]
-        slot, gain = best_slot(grid, held)
+        ctx = BotContext(state, self.seat)
+        slot, gain = best_slot(grid, held, ctx)
         from_deck = state["drawn_from"] == "deck"
         discard = from_deck and gain < self.cfg["keep_gain"]
         if self.rng.random() < self.cfg["mistakes"]:
@@ -165,7 +278,6 @@ class GolfBot:
             discard = from_deck and self.rng.random() < 0.3
         target = (g.DISCARD_POS if discard
                   else g.PLAYER_GRID_SLOTS[self.seat][slot])
-        # release_card needs a press position to tell a drag from a click
         held["press_pos"] = tuple(held["pos"])
         g.release_card(held, target, state)
 
