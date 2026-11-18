@@ -1,6 +1,8 @@
 import random
 import os
 import glob
+import time
+import statistics
 import pygame
 
 WINDOW_SIZE = (1000, 660)
@@ -126,6 +128,10 @@ def make_state(num_players=NUM_PLAYERS):
 # Remember the last sound variant played for each kind.
 _last_played = {}
 
+# Assets live next to this file, so the game runs from any directory.
+ASSETS_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)),
+                          "assets")
+
 
 def scale_card(surface):
     """Resize a card image to CARD_SIZE."""
@@ -135,7 +141,7 @@ def scale_card(surface):
 def load_card_face(suit, rank):
     """Load one card face and scale it."""
     filename = f"{rank} of {suit}.png"
-    path = os.path.join("assets", "cards", "fronts", suit, filename)
+    path = os.path.join(ASSETS_DIR, "cards", "fronts", suit, filename)
 
     image = pygame.image.load(path).convert_alpha()
     return scale_card(image)
@@ -153,7 +159,7 @@ def load_deck_faces():
 def load_card_back(color="blue"):
     """Load and scale a card back."""
     filename = f"card back {color}.png"
-    path = os.path.join("assets", "cards", "backs", filename)
+    path = os.path.join(ASSETS_DIR, "cards", "backs", filename)
 
     image = pygame.image.load(path).convert_alpha()
     return scale_card(image)
@@ -173,7 +179,7 @@ def load_sfx():
 
     sfx = {kind: [] for kind in kinds}
 
-    sfx_dir = os.path.join("assets", "sfx", "cards")
+    sfx_dir = os.path.join(ASSETS_DIR, "sfx", "cards")
 
     for kind in kinds:
         # Convert underscores to hyphens for filenames.
@@ -233,10 +239,15 @@ TEXT_COLOR   = (235, 245, 235)
 
 def create_display():
     """
-    opens the window.
+    opens the window. Returns (screen, refresh_hz, vsynced).
+    Safe even if vsync is not supported - the flag is just ignored.
     """
-    screen = pygame.display.set_mode(WINDOW_SIZE)
-    return screen
+    screen = pygame.display.set_mode(WINDOW_SIZE, pygame.SCALED, vsync=1)
+    vsynced = pygame.display.is_vsync()           # did it really happen?
+    refresh_hz = pygame.display.get_current_refresh_rate()
+    if refresh_hz == 0:                           # headless machines
+        refresh_hz = 60
+    return screen, refresh_hz, vsynced
 
 
 def card_rect(card):
@@ -346,3 +357,136 @@ def render(screen, state, font, faces, back):
     for card in state["cards"]:
         if card["zone"] in ("hand", "grid"):
             draw_card(screen, card, faces, back)
+
+
+# ----------------------------------------------------------------------
+# Stage 5 - THE GAME LOOP, TIME AND VSYNC (issue #5)
+# ----------------------------------------------------------------------
+MAX_DT = 0.05    # clamp: a stalled frame must not teleport things
+
+
+def draw_hud(screen, font, message, lines):
+    """Controls hint, stats block, and state["message"] if not empty."""
+    hint = font.render("Drag | Click flip | Space draw | Tab switch"
+                       " | R: redeal | Esc quit", True, TEXT_COLOR)
+    screen.blit(hint, (12, 10))
+    y = 34
+    for text, color in lines:
+        surf = font.render(text, True, color)
+        screen.blit(surf, (12, y))
+        y += surf.get_height() + 2
+    if message:
+        surf = font.render(message, True, (255, 230, 120))
+        screen.blit(surf, surf.get_rect(center=(WINDOW_SIZE[0] // 2, 60)))
+
+
+def handle_input(events, state, sfx, mouse_pos):
+    """False = quit."""
+    for event in events:
+        if event.type == pygame.QUIT:
+            return False
+        if event.type == pygame.KEYDOWN and event.key == pygame.K_ESCAPE:
+            return False
+    return True
+
+
+def update(state, dt, mouse_pos, sfx):
+    """Stages 6-9 fill this in."""
+
+
+def _pacing_lines(frame_times, vsynced, refresh_hz, using_timer):
+    """HUD stats like fps, pacing mode, frame-time spread (ms)."""
+    if len(frame_times) < 2:
+        return [], 0.0, 0.0, 0.0
+    mean = statistics.mean(frame_times)
+    fps = 1.0 / mean if mean > 0 else 0.0
+    spread = statistics.pstdev(frame_times) * 1000
+    if vsynced and not using_timer:
+        mode = f"vsync, target {refresh_hz} Hz"
+    else:
+        mode = f"cap {refresh_hz or 60} fps"
+    lines = [(f"{fps:5.1f} fps", TEXT_COLOR),
+             (mode, TEXT_COLOR),
+             (f"frame time {mean * 1000:.2f} ms, sd {spread:.2f} ms",
+              TEXT_COLOR)]
+    return lines, fps, mean * 1000, spread
+
+
+def main(frames=None):
+    """The game window, assets, state, nd the loop."""
+    pygame.init()
+    screen, refresh_hz, vsynced = create_display()
+    pygame.display.set_caption("Golf - 2 players")
+    font = pygame.font.Font(None, 26)
+    faces = load_deck_faces()
+    back = load_card_back()
+    sfx = load_sfx()
+
+    state = make_state(NUM_PLAYERS)
+    state["sfx"] = sfx
+
+    clock = pygame.time.Clock()
+    using_timer = not vsynced
+    target_fps = refresh_hz or 60
+    last = time.perf_counter()
+    window_times, all_times = [], []
+    stat_clock = 0.0
+    frame_count = 0
+    running = True
+
+    while running:
+        # 1. dt
+        now = time.perf_counter()
+        raw_dt = now - last
+        last = now
+        dt = min(raw_dt, MAX_DT)
+        if frame_count > 0:
+            window_times.append(raw_dt)
+            all_times.append(raw_dt)
+
+        # 2. input
+        mouse_pos = pygame.mouse.get_pos()
+        running = handle_input(pygame.event.get(), state, sfx, mouse_pos)
+
+        # 3. update
+        update(state, dt, mouse_pos, sfx)
+
+        # 4. render
+        render(screen, state, font, faces, back)
+        turn_line = (f"PLAYER {state['current'] + 1}'S TURN", (255, 230, 120))
+        draw_hud(screen, font, state["message"],
+                 [turn_line] + state["hud_lines"])
+
+        # 5. show
+        pygame.display.flip()
+        if using_timer:
+            clock.tick(target_fps)
+
+        # If "vsync" did not actually wait, fall back to a timer.
+        if (vsynced and not using_timer and refresh_hz
+                and len(all_times) == 60
+                and statistics.mean(all_times) < 0.5 / refresh_hz):
+            using_timer = True
+
+        # HUD stats every 0.5 s
+        stat_clock += raw_dt
+        if stat_clock >= 0.5:
+            state["hud_lines"] = _pacing_lines(window_times, vsynced,
+                                               refresh_hz, using_timer)[0]
+            window_times = []
+            stat_clock = 0.0
+
+        frame_count += 1
+        if frames is not None and frame_count >= frames:
+            running = False
+
+    _, fps, mean_ms, sd_ms = _pacing_lines(all_times, vsynced,
+                                           refresh_hz, using_timer)
+    mode = "vsync" if vsynced and not using_timer else "timer"
+    print(f"pacing: {frame_count} frames, {fps:.1f} fps, "
+          f"{mean_ms:.2f} ms mean, {sd_ms:.2f} ms sd, {mode}")
+    pygame.quit()
+
+
+if __name__ == "__main__":
+    main()

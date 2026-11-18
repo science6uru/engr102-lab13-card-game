@@ -13,6 +13,8 @@ lab rules; the planning document and reflection stay team-written).
 
 import os
 import sys
+import io
+import contextlib
 import unittest
 
 HERE = os.path.dirname(os.path.abspath(__file__))
@@ -280,6 +282,18 @@ class Stage4Drawing(unittest.TestCase):
         self.assertIs(g.current_texture(card, faces, back), face)
         card["face_up"] = False
         self.assertIs(g.current_texture(card, faces, back), back)
+
+
+class Stage5LoopAndVsync(unittest.TestCase):
+    """Issue #5 - the game loop, time and vsync."""
+
+    def test_5_1_main_runs_120_frames_headless(self):
+        buf = io.StringIO()
+        with contextlib.redirect_stdout(buf):
+            g.main(frames=120)
+        out = buf.getvalue()
+        self.assertTrue(out.startswith("pacing:"), out)
+        self.assertIn("120 frames", out)
 
 
 if __name__ == "__main__":
