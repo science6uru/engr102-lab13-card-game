@@ -220,3 +220,129 @@ def play(sfx, kind):
     sounds[index].play()
 
     _last_played[kind] = index
+
+
+# ----------------------------------------------------------------------
+# Stage 4 - DRAWING A STILL TABLE (issue #4)
+# ----------------------------------------------------------------------
+TABLE_GREEN  = (28, 105, 60)
+SLOT_GREEN   = (22, 88, 50)
+ACTIVE_GREEN = (70, 170, 105)     # active player's slot outlines
+TEXT_COLOR   = (235, 245, 235)
+
+
+def create_display():
+    """
+    opens the window.
+    """
+    screen = pygame.display.set_mode(WINDOW_SIZE)
+    return screen
+
+
+def card_rect(card):
+    """
+    Used for drawing cards. Rectangle CARD_SIZE big, centered on pos.
+    """
+    rect = pygame.Rect((0, 0), CARD_SIZE)
+    rect.center = (round(card["pos"][0]), round(card["pos"][1]))
+    return rect
+
+
+def current_texture(card, faces, back):
+    """
+    returns the Surface to show:
+    faces[(card["suit"], card["rank"])] if the card is face up,
+    otherwise back.
+    """
+    if card["face_up"]:
+        return faces[(card["suit"], card["rank"])]
+    else:
+        return back
+
+
+def draw_card(screen, card, faces, back):
+    """blits that picture centered
+    on the card's position. dependent on face up or face down"""
+    screen.blit(current_texture(card, faces, back), card_rect(card))
+
+
+def draw_piles(screen, cards, faces, back):
+    """
+    Deck: draw the top 3 cards still in zone "deck" face-down, each
+        2 pixels higher than the last, so the pile looks thick.
+    Discard: draw the cards in zone "discard" face-up with a tiny
+        offset each, so the pile looks fanned.
+    """
+    top_3_in_discard = []
+    discard_parse_count = 0
+    deck_parse_count = 0
+
+    for card in cards:
+        if card["zone"] == "deck":
+            deck_parse_count += 1
+        if card["zone"] == "discard":
+            discard_parse_count += 1
+            top_3_in_discard.append(card)
+        if discard_parse_count == 3:
+            break
+
+    # cards in deck: bottom layer first, top card drawn LAST (on top).
+    # draw only as many layers as the pile actually has.
+    for i in range(min(3, deck_parse_count) - 1, -1, -1):
+        rect = pygame.Rect((0, 0), CARD_SIZE)
+        rect.center = (DECK_POS[0], DECK_POS[1] - 2 * i)
+        screen.blit(back, rect)
+
+    # cards in discard: centered on the card's own pos, offset per layer
+    move_over = 0
+    for card in top_3_in_discard[::-1]:
+        rect = card_rect(card)
+        rect.move_ip(move_over, move_over)
+        screen.blit(current_texture(card, faces, back), rect)
+        move_over += 2
+
+
+def draw_table(screen, font, current=None):
+    """
+    Felt + slot outlines (active player lighter) + DECK/DISCARD outlines
+    + labels. Drawing only READS: no state is modified here.
+    """
+    screen.fill(TABLE_GREEN)
+
+    for p in range(NUM_PLAYERS):
+        color = ACTIVE_GREEN if p == current else SLOT_GREEN
+        for slot in PLAYER_GRID_SLOTS[p] + PLAYER_HAND_SLOTS[p]:
+            slot_rect = pygame.Rect((0, 0), CARD_SIZE)
+            slot_rect.center = slot
+            pygame.draw.rect(screen, color, slot_rect, 3, border_radius=8)
+        grid_mid_y = (PLAYER_GRID_SLOTS[p][0][1]
+                      + PLAYER_GRID_SLOTS[p][2][1]) // 2
+        label = font.render(f"PLAYER {p + 1}", True,
+                            ACTIVE_GREEN if p == current else TEXT_COLOR)
+        screen.blit(label, label.get_rect(midright=(410, grid_mid_y)))
+
+    for center in (DECK_POS, DISCARD_POS):
+        pile_rect = pygame.Rect((0, 0), CARD_SIZE)
+        pile_rect.center = center
+        pygame.draw.rect(screen, SLOT_GREEN, pile_rect, 3, border_radius=8)
+
+    deck_label = font.render("DECK", True, TEXT_COLOR)
+    discard_label = font.render("DISCARD", True, TEXT_COLOR)
+    screen.blit(deck_label,
+                deck_label.get_rect(midright=(DECK_POS[0] - CARD_SIZE[0]
+                                              // 2 - 10, DECK_POS[1])))
+    screen.blit(discard_label,
+                discard_label.get_rect(midleft=(DISCARD_POS[0] + CARD_SIZE[0]
+                                                // 2 + 10, DISCARD_POS[1])))
+
+
+def render(screen, state, font, faces, back):
+    """
+    Draw everything in order: table, piles, then every card that is in
+    a hand or grid of ANY player (cards drawn LAST appear ON TOP).
+    """
+    draw_table(screen, font, state["current"])
+    draw_piles(screen, state["cards"], faces, back)
+    for card in state["cards"]:
+        if card["zone"] in ("hand", "grid"):
+            draw_card(screen, card, faces, back)
