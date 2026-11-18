@@ -1,4 +1,7 @@
 import random
+import os
+import glob
+import pygame
 
 WINDOW_SIZE = (1000, 660)
 CARD_SIZE   = (90, 126)        # smaller so two grids fit on one screen
@@ -115,3 +118,105 @@ def make_state(num_players=NUM_PLAYERS):
              "message": None, "message_t": 0.0,
              "sfx": None, "queue": [], "hud_lines": []}
     return state
+
+
+# ----------------------------------------------------------------------
+# Stage 3 - LOADING PICTURES AND SOUNDS (issue #3)
+# ----------------------------------------------------------------------
+# Remember the last sound variant played for each kind.
+_last_played = {}
+
+
+def scale_card(surface):
+    """Resize a card image to CARD_SIZE."""
+    return pygame.transform.smoothscale(surface, CARD_SIZE)
+
+
+def load_card_face(suit, rank):
+    """Load one card face and scale it."""
+    filename = f"{rank} of {suit}.png"
+    path = os.path.join("assets", "cards", "fronts", suit, filename)
+
+    image = pygame.image.load(path).convert_alpha()
+    return scale_card(image)
+
+
+def load_deck_faces():
+    """Load all 52 card faces into a dictionary."""
+    return {
+        (suit, rank): load_card_face(suit, rank)
+        for suit in SUITS
+        for rank in RANKS
+    }
+
+
+def load_card_back(color="blue"):
+    """Load and scale a card back."""
+    filename = f"card back {color}.png"
+    path = os.path.join("assets", "cards", "backs", filename)
+
+    image = pygame.image.load(path).convert_alpha()
+    return scale_card(image)
+
+
+def load_sfx():
+    """Load all sound effects, grouped by kind."""
+    kinds = [
+        "slide",
+        "place",
+        "shove",
+        "fan",
+        "shuffle",
+        "pack_open",
+        "pack_take_out"
+    ]
+
+    sfx = {kind: [] for kind in kinds}
+
+    sfx_dir = os.path.join("assets", "sfx", "cards")
+
+    for kind in kinds:
+        # Convert underscores to hyphens for filenames.
+        filename_kind = kind.replace("_", "-")
+
+        # Real files are card-slide-*.ogg etc (but card-shuffle.ogg has
+        # no number), and the two pack kinds start with "cards-".
+        prefix = "cards" if kind.startswith("pack") else "card"
+        pattern = os.path.join(sfx_dir, f"{prefix}-{filename_kind}*.ogg")
+
+        files = glob.glob(pattern)
+
+        try:
+            sfx[kind] = [
+                pygame.mixer.Sound(file)
+                for file in files
+            ]
+        except pygame.error as error:
+            print(f"Could not load sound effects: {error}")
+
+    return sfx
+
+
+def play(sfx, kind):
+    """Play a random sound without repeating the previous variant."""
+    sounds = sfx.get(kind, [])
+
+    if not sounds:
+        return
+
+    if len(sounds) == 1:
+        sounds[0].play()
+        return
+
+    last = _last_played.get(kind)
+
+    choices = [
+        i for i in range(len(sounds))
+        if i != last
+    ]
+
+    index = random.choice(choices)
+
+    sounds[index].play()
+
+    _last_played[kind] = index

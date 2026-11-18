@@ -18,7 +18,12 @@ import unittest
 HERE = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, HERE)
 
+# Stage 3+ needs pygame headless.
+os.environ.setdefault("SDL_VIDEODRIVER", "dummy")
+os.environ.setdefault("SDL_AUDIODRIVER", "dummy")
+
 import fun_game as g          # noqa: E402  (after sys.path setup)
+import pygame                 # noqa: E402
 
 
 class Stage1CardsAsData(unittest.TestCase):
@@ -193,6 +198,66 @@ class Stage2ZonesShufflingDealing(unittest.TestCase):
         self.assertEqual(c["owner"], 1)
         g.reset_card_zone(c, "discard")
         self.assertIsNone(c["owner"])
+
+
+class Stage3Loading(unittest.TestCase):
+    """Issue #3 - loading pictures and sounds (ported from
+    test_resource_loader.py, unittest + numbering per team harness)."""
+
+    @classmethod
+    def setUpClass(cls):
+        pygame.init()
+        pygame.display.set_mode((1, 1))   # convert_alpha needs a display
+
+    @classmethod
+    def tearDownClass(cls):
+        pygame.quit()
+
+    def test_3_1_deck_faces_has_52_entries(self):
+        faces = g.load_deck_faces()
+        self.assertEqual(len(faces), 52)
+        for suit in g.SUITS:
+            for rank in g.RANKS:
+                self.assertIn((suit, rank), faces)
+
+    def test_3_2_every_picture_is_card_size(self):
+        faces = g.load_deck_faces()
+        back = g.load_card_back()
+        for face in faces.values():
+            self.assertEqual(face.get_size(), g.CARD_SIZE)
+        self.assertEqual(back.get_size(), g.CARD_SIZE)
+
+    def test_3_3_load_sfx_returns_every_kind(self):
+        sfx = g.load_sfx()
+        for kind in ["slide", "place", "shove", "fan", "shuffle",
+                     "pack_open", "pack_take_out"]:
+            self.assertIn(kind, sfx)
+            self.assertIsInstance(sfx[kind], list)
+            self.assertTrue(sfx[kind], f"no sounds loaded for {kind!r}")
+
+    def test_3_4_play_never_repeats_a_variant(self):
+        class FakeSound:
+            def __init__(self, name):
+                self.name = name
+                self.play_count = 0
+
+            def play(self):
+                self.play_count += 1
+
+        sounds = {"slide": [FakeSound("sound1"), FakeSound("sound2")]}
+        g._last_played.clear()
+
+        previous = None
+        for _ in range(100):
+            g.play(sounds, "slide")
+            played = sounds["slide"][g._last_played["slide"]].name
+            self.assertNotEqual(played, previous)
+            previous = played
+
+        # No sounds / unknown kind: play() does nothing, no crash.
+        g.play({}, "slide")
+        g.play({"slide": []}, "slide")
+        g.play({"place": []}, "slide")
 
 
 if __name__ == "__main__":
