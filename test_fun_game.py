@@ -417,5 +417,242 @@ class Stage7FlippingAndClicking(unittest.TestCase):
         self.assertTrue(down["face_up"])     # revealed by lifting, once
 
 
+class Stage8PlacingSwappingDiscarding(unittest.TestCase):
+    """Issue #16 - send_card and the drop decision in release_card."""
+
+    def setUp(self):
+        self.state = g.make_state(2)
+        self.state["sfx"] = {}
+
+    def hand_card(self, player=0, suit="hearts", rank="queen"):
+        """A face-up card sitting in that player's hand slot 0."""
+        pos = g.PLAYER_HAND_SLOTS[player][0]
+        c = placed(suit, rank, zone="hand", slot=0, owner=player, pos=pos)
+        self.state["players"][player]["hand_occ"][0] = c
+        return c
+
+    def grid_card(self, player, slot, suit="clubs", rank="2"):
+        """A face-up card sitting in that player's grid slot."""
+        pos = g.PLAYER_GRID_SLOTS[player][slot]
+        c = placed(suit, rank, zone="grid", slot=slot, owner=player, pos=pos)
+        self.state["players"][player]["grid_occ"][slot] = c
+        return c
+
+    def drop(self, c, point):
+        """Pick the card up where it sits, then let go at point."""
+        g.begin_drag(c, tuple(c["pos"]), {})
+        g.release_card(c, point, self.state)
+
+    def test_8_0_send_card_sets_target_without_teleporting(self):
+        """Contract: glide + target + zone/slot/owner, pos untouched."""
+        c = self.hand_card()
+        before = list(c["pos"])
+        g.send_card(c, g.PLAYER_GRID_SLOTS[0][3], "grid", 3, owner=0)
+        self.assertEqual(c["motion"], "glide")
+        self.assertEqual(c["target"], list(g.PLAYER_GRID_SLOTS[0][3]))
+        self.assertEqual(c["zone"], "grid")
+        self.assertEqual(c["slot"], 3)
+        self.assertEqual(c["owner"], 0)
+        self.assertEqual(c["pos"], before)
+
+    def test_8_1_nearest_slot_wins(self):
+        """x = 770 is between slots 0 (700) and 1 (810): slot 1 is nearer."""
+        c = self.hand_card()
+        self.drop(c, (770, 415))
+        self.assertEqual(c["zone"], "grid")
+        self.assertEqual(c["slot"], 1)
+
+    def test_8_2_place_into_an_empty_slot(self):
+        c = self.hand_card()
+        self.drop(c, g.PLAYER_GRID_SLOTS[0][2])
+        p0 = self.state["players"][0]
+        self.assertEqual(c["zone"], "grid")
+        self.assertEqual(c["slot"], 2)
+        self.assertEqual(c["owner"], 0)           # send_card kept the owner
+        self.assertIs(p0["grid_occ"][2], c)
+        self.assertIsNone(p0["hand_occ"][0])
+        self.assertEqual(c["target"], list(g.PLAYER_GRID_SLOTS[0][2]))
+
+    def test_8_3_swap_sends_the_old_card_to_the_discard_face_up(self):
+        old = self.grid_card(0, 0)
+        old["face_up"] = False
+        c = self.hand_card()
+        self.drop(c, g.PLAYER_GRID_SLOTS[0][0])
+        p0 = self.state["players"][0]
+        self.assertEqual(old["zone"], "discard")
+        self.assertTrue(old["face_up"])
+        self.assertIsNone(old["owner"])
+        self.assertEqual(old["target"], list(g.DISCARD_POS))
+        self.assertIs(p0["grid_occ"][0], c)
+        self.assertEqual(c["zone"], "grid")
+        self.assertIsNone(p0["hand_occ"][0])
+
+    def test_8_4_discard(self):
+        c = self.hand_card()
+        self.drop(c, g.DISCARD_POS)
+        self.assertEqual(c["zone"], "discard")
+        self.assertIsNone(c["owner"])
+        self.assertTrue(c["face_up"])
+        self.assertIsNone(self.state["players"][0]["hand_occ"][0])
+        self.assertEqual(c["target"], list(g.DISCARD_POS))
+
+    def test_8_5_far_from_everything_goes_home(self):
+        c = self.hand_card()
+        self.drop(c, (100, 600))
+        self.assertEqual(c["zone"], "hand")
+        self.assertEqual(c["slot"], 0)
+        self.assertEqual(c["owner"], 0)
+        self.assertIs(self.state["players"][0]["hand_occ"][0], c)
+        self.assertEqual(c["target"], list(g.PLAYER_HAND_SLOTS[0][0]))
+
+    def test_8_6_cannot_drop_on_the_other_players_grid(self):
+        c = self.hand_card(player=1)
+        self.drop(c, g.PLAYER_GRID_SLOTS[0][0])   # player 0's grid
+        self.assertEqual(c["zone"], "hand")
+        self.assertEqual(c["owner"], 1)
+        self.assertEqual(c["target"], list(g.PLAYER_HAND_SLOTS[1][0]))
+        self.assertEqual(self.state["players"][0]["grid_occ"], [None] * 4)
+
+    def test_8_7_player_1_places_into_player_1s_grid(self):
+        c = self.hand_card(player=1)
+        self.drop(c, g.PLAYER_GRID_SLOTS[1][0])
+        self.assertIs(self.state["players"][1]["grid_occ"][0], c)
+        self.assertEqual(c["owner"], 1)
+        self.assertEqual(self.state["players"][0]["grid_occ"], [None] * 4)
+
+    def test_8_8_dropping_on_its_own_slot_settles_back(self):
+        c = self.grid_card(0, 1)
+        x, y = g.PLAYER_GRID_SLOTS[0][1]
+        self.drop(c, (x + 20, y))                 # moved, so not a click
+        p0 = self.state["players"][0]
+        self.assertEqual(c["zone"], "grid")
+        self.assertEqual(c["slot"], 1)
+        self.assertIs(p0["grid_occ"][1], c)
+        self.assertEqual(c["target"], list(g.PLAYER_GRID_SLOTS[0][1]))
+        self.assertEqual(sum(1 for s in p0["grid_occ"] if s), 1)
+
+    def test_8_9_a_grid_card_dropped_on_the_discard_empties_its_slot(self):
+        c = self.grid_card(0, 1)
+        self.drop(c, g.DISCARD_POS)
+        self.assertEqual(c["zone"], "discard")
+        self.assertIsNone(self.state["players"][0]["grid_occ"][1])
+
+    def test_8_10_a_click_never_triggers_a_drop(self):
+        """The click check returns early: no glide, nothing moves slots."""
+        c = self.grid_card(0, 1)
+        g.begin_drag(c, tuple(c["pos"]), {})
+        g.release_card(c, tuple(c["pos"]), self.state)
+        self.assertIsNone(c["motion"])
+        self.assertIs(self.state["players"][0]["grid_occ"][1], c)
+
+
+class Stage9MovementOverTime(unittest.TestCase):
+    """Issue #17 - gliding, dealing, the queue and update()."""
+
+    def setUp(self):
+        self.state = g.make_state(2)
+        self.state["sfx"] = {}
+
+    def full_deck(self):
+        self.state["cards"] = g.make_deck()
+        self.state["deck"] = list(self.state["cards"])
+
+    def run_frames(self, seconds, fps=60, mouse=(0, 0)):
+        for _ in range(round(seconds * fps)):
+            g.update(self.state, 1 / fps, mouse, {})
+
+    def test_9_0_make_card_has_the_announced_keys(self):
+        c = g.make_card("hearts", "queen")
+        self.assertEqual(c["t"], 0.0)
+        self.assertEqual(c["start"], [0.0, 0.0])
+        self.assertEqual(c["arc"], 0.0)
+
+    def test_9_1_glide_lands_on_the_slot(self):
+        c = placed("hearts", "queen", zone="hand", owner=0,
+                   pos=g.PLAYER_HAND_SLOTS[0][0])
+        self.state["cards"].append(c)
+        g.send_card(c, g.PLAYER_GRID_SLOTS[0][3], "grid", 3, owner=0)
+        self.run_frames(2)
+        self.assertIsNone(c["motion"])
+        self.assertEqual(c["pos"], list(g.PLAYER_GRID_SLOTS[0][3]))
+        self.assertEqual(c["zone"], "grid")
+        self.assertEqual(c["slot"], 3)
+
+    def test_9_2_glide_lands_at_30_60_and_240_fps(self):
+        for fps in (30, 60, 240):
+            c = placed("hearts", "queen", zone="hand", owner=0,
+                       pos=g.PLAYER_HAND_SLOTS[0][0])
+            self.state["cards"] = [c]
+            g.send_card(c, g.PLAYER_GRID_SLOTS[0][3], "grid", 3, owner=0)
+            self.run_frames(2, fps=fps)
+            self.assertIsNone(c["motion"], f"still gliding at {fps} fps")
+            self.assertEqual(c["pos"], list(g.PLAYER_GRID_SLOTS[0][3]))
+
+    def test_9_3_deal_to_hand_lands_in_the_hand(self):
+        self.full_deck()
+        card = g.deal_to_hand(self.state, 1, {})
+        self.run_frames(0.6, fps=120)
+        target = g.PLAYER_HAND_SLOTS[1][0]
+        self.assertAlmostEqual(card["pos"][0], target[0], delta=1)
+        self.assertAlmostEqual(card["pos"][1], target[1], delta=1)
+        self.assertEqual(card["owner"], 1)
+        self.assertIs(self.state["players"][1]["hand_occ"][0], card)
+        self.assertEqual(self.state["players"][0]["hand_occ"], [None])
+        self.assertTrue(card["face_up"])
+        self.assertEqual(card["zone"], "hand")
+        self.assertIsNone(card["motion"])
+
+    def test_9_4_deal_from_an_empty_deck_sets_a_message(self):
+        self.state["deck"] = []
+        self.assertIsNone(g.deal_to_hand(self.state, 0, {}))
+        self.assertEqual(self.state["message"], "deck is empty!")
+        self.assertEqual(self.state["message_t"], 1.5)
+        self.run_frames(1.6)                      # the message times out
+        self.assertFalse(self.state["message"])
+
+    def test_9_4b_deal_into_a_full_hand_says_hand_is_full(self):
+        self.full_deck()
+        g.deal_to_hand(self.state, 0, {})
+        self.assertIsNone(g.deal_to_hand(self.state, 0, {}))
+        self.assertEqual(self.state["message"], "hand is full!")
+        self.assertEqual(len(self.state["deck"]), 51)
+
+    def test_9_5_reset_table_deals_four_face_down_cards_each(self):
+        g.reset_table(self.state, {})
+        self.run_frames(3)
+        for player in (0, 1):
+            grid = self.state["players"][player]["grid_occ"]
+            self.assertEqual(len(grid), 4)
+            for slot, c in enumerate(grid):
+                self.assertIsNotNone(c)
+                self.assertFalse(c["face_up"])
+                self.assertEqual(c["owner"], player)
+                self.assertEqual(c["slot"], slot)
+                self.assertIsNone(c["motion"])
+                self.assertEqual(c["pos"],
+                                 list(g.PLAYER_GRID_SLOTS[player][slot]))
+        self.assertEqual(len(self.state["deck"]), 44)
+        self.assertEqual(len(self.state["cards"]), 52)
+        self.assertEqual(self.state["queue"], [])
+
+    def test_9_5b_reset_table_queue_alternates_players(self):
+        g.reset_table(self.state, {})
+        queue = self.state["queue"]
+        self.assertEqual(len(queue), 8)
+        for i, (delay, player, slot) in enumerate(queue):
+            self.assertAlmostEqual(delay, 0.2 + 0.18 * i)
+            self.assertEqual(player, i % 2)
+            self.assertEqual(slot, i // 2)
+
+    def test_9_6_dragging_moves_only_once_per_frame(self):
+        """update must not call update_drag in addition to update_motion."""
+        c = placed("hearts", "queen", pos=(100, 100))
+        self.state["cards"] = [c]
+        g.begin_drag(c, (100, 100), {})
+        g.update(self.state, 1 / 120, (200, 100), {})
+        expected = 100 + 100 * g.blend(g.DRAG_FOLLOW, 1 / 120)
+        self.assertAlmostEqual(c["pos"][0], expected)
+
+
 if __name__ == "__main__":
     unittest.main()
