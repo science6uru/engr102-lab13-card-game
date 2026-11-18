@@ -1,0 +1,157 @@
+Golf
+A player's grid of cards, in six card golf
+Alternative
+names
+Polish Polka, Polish Poker,
+Turtle
+Type Draw and discard
+Players 2+
+Cards Single deck of 52 or double
+deck of 104
+Deck Anglo-American
+Playing time 10 minutes
+Golf (card game)
+Golf (also known as Polish Polka, Polish Poker,
+Turtle, Hara Kiri and Crazy Nines[1]) is a card game
+where players try to earn the lowest score (as in golf,
+the sport) over the course of multiple deals (or "holes",
+as in a golf course hole), usually nine.[2]
+This game is not to be confused with the solitaire game
+of the same name, with which it has little in common.
+A single 52-card deck is recommended for a two or
+three player game. If played with four or more players,
+a double-deck of 104 cards is ideal.
+Each player is dealt six face-down cards from a
+shuffled deck. The remaining cards are placed face
+down to form the stockpile, from which the top card is
+taken and turned up to start the discard pile beside it.
+Players arrange their cards in two rows of three in front
+of them and turn any two of these cards face up.[1] This
+arrangement is maintained throughout the game;
+players always have six cards in front of them.
+The objective is for players to reduce the value of the cards in front of them by swapping them for lesser
+value cards. After the end of each round, players calculate the score of their respective six cards.
+Beginning with the person left of the dealer, each player takes turn doing one of three actions:
+1. Draw a card from the discard pile and replace it with any of the player's six cards facing up,
+regardless if the card replaced is facing up or facing down. (Players must perform the swap
+if the card is drawn from the discard pile) The card that was replaced is then discarded
+(facing up).
+2. Draw a card from the stockpile and replace it with any of the player's six cards facing up
+(when the card drawn is desirable), regardless if the card replaced is facing up or facing
+down. The card that was replaced is then discarded (facing up).
+3. Draw a card from the stockpile and discard the drawn card (when the card is not desirable).
+It is optional that one of the cards faced down in the player's formation must be revealed
+(flipped face up) depending on the variation.
+Deal
+Play
+If the card is drawn from the stockpile, the player who drew the card is allowed to inspect their card in
+order to make a decision.
+The round ends when a player has six face-up cards (sometimes the other players are given one final turn
+following this),[1] after which scoring happens as follows:[3][4]
+Each Ace scores one point
+Each Two scores minus two points
+Each numeral card from 3 to 10 scores its face value
+Each Jack or Queen scores 10 points
+Each King scores zero points
+A pair of equal-ranked cards in the same column scores zero points for that column
+regardless of the rank of those cards
+During play, it is not legal to return a card drawn from the discard pile without playing it. When a player
+picks up the top card of the discard pile, that card must be played by swapping it with one of that player's
+cards.
+A full game is typically nine hands, also known as "holes", after which the player with the fewest points
+total is designated the winner.[1] A longer game can be played to eighteen hands.[1]
+There are many variants of multiplayer golf.[1] Some common ones include:
+For two to four players. Rules are the same as in double-deck golf. Sometimes, jokers are not used.
+Golf can be played so that instead of ending the game automatically, a player must choose to "knock"
+instead of taking their turn. Remaining players then have one turn to draw a card to improve their hands
+and then scores are totaled and recorded on a running score sheet. This rule is more common for four-card
+golf.[1]
+Suitable for 3–7 players, in four-card Golf each player receives four cards face down in a 2×2 grid and
+reveal two before play begins.[5] Play proceeds similar to six-card golf. The end of a round is initiated by
+a player 'knocking', after which other players get one final turn.
+One or two decks are involved, depending on the number of players. One deck is adequate for 1-3
+players, two or more decks are suggested for 4+ players.[6] To begin the game, each player is dealt nine
+cards, laying out the cards face down in a 3x3 grid. The method or pattern for how the players layout their
+Variations
+Single-deck golf
+Knocking
+Four-card golf
+Nine-card golf
+3x3 grid is arbitrary, as long as the cards remain face down.
+The game is played as six-card golf. Once any grid contains only face-up cards, the game is immediately
+ended, there are no further turns, and all players must flip all their face-down cards to determine their
+scores. Scoring is the same as six-card golf, with players having to form a full three-of-a-kind column to
+have that column score zero.[1]
+This process of game play continues for nine total games or until a player exceeds 50 points.
+Optional rules of this version include:
+Horizontal and diagonal lines of three also score zero[1]
+Playing with jokers in the game, valued at -2 points, and having 2s score +2 instead of -2[1]
+Every pair of adjacent (horizontal or vertical) equal cards scores zero[1]
+If the player places four cards in a square pattern (i.e. 2x2 block) of the same face-point
+value, this results in a negative score (e.g. -25), for those four cards[7]
+Instead of drawing a card, a player may choose to flip a card in their grid face up
+Playing until a player exceeds 100 points instead of 50
+There are many variants for point values of cards, including:
+Jokers are added to the deck and score -5,[1] or some other negative number.
+Jokers are +15 individually, or -5 as a pair.
+Queens score 12, 13 or 20 points each.
+Queen of spades scores 40 points, other Queens 10 each, and Eights zero points.
+One-eyed jacks are wild and automatically form a pair with an adjacent card (or complete a
+triplet in 9-card golf).
+Jacks score zero, Queens 12, Kings 13.
+Jacks are worth 20 points each and, when discarded, the next player in turn order loses a
+turn.
+Twos are plus 2 instead of minus 2 (usually played in games without jokers).
+Four of a kind wins the game (not the hole) automatically (usually played in 4-card golf).
+A player who has a 9 card straight scores -12. This hand is considered a "hole in 1". If a
+player does not obtain correct number of cards for a straight, all points are added as usual.
+A player may "shoot the moon" by getting the maximum 60 points. When this occurs, all
+other players get 60 points.
+When playing 8-card, 4x2, four kings on one side = -16 points.
+In "Cutthroat Golf", the kings are worth 15 points and, if drawn from the deck, can be traded
+for any other player's up card. The card they receive must then be placed in their hand.
+In some versions, making a pair or triple of cards of equal rank (sometimes vertically, sometimes
+horizontally and sometimes diagonally) reduces those cards' scores to zero.[1]
+Alternative scoring
+Cambio
+Variants known as Cambio, Pablo or Cactus include "power cards". When a power card is drawn from
+the stock, it can either be used for its normal value or discarded to activate its power. (If a power card is
+drawn from the discards, it must be played as its number.)[1] A simple version of the game played in
+Malaysia has the following power cards:[1]
+A Jack allows a player to look at one of their own cards (without their opponent seeing it)
+A Queen allows a player to look at one of their opponent's cards (again without their
+opponent seeing)
+A King allows a player to swap one of their own cards with that of their opponent
+A Joker allows a player to change the positions of their opponent's cards
+John McLeod of Pagat.com speculates that these variants are Spanish in origin, as the game is recorded as
+being played by students in Spain, and many of its variant names are Spanish words (cambio meaning
+"exchange").[1] The game had a commercial release as Cabo in 2010[1] and is similar to the 1996 Mensa
+Select winner Rat-a-Tat Cat.
+Some play Golf and its variations such that a player who knocks (turns over all cards first) but doesn't end
+with the lowest score is penalized:
+Knocker adds a penalty of 10 or 20 points, or...
+Knocker's score for the hand is doubled with 5 points added, or...
+The knocker takes a score equal to the highest scoring player for that hand, or...
+Knocker adds twice the number of people playing.
+If the knocker's score is lowest, some play with a bonus:
+Knocker scores zero instead of a positive score, or...
+Knocker's score is reduced by the number of people playing.
+1. "Rules of Card Games: Golf" (http://www.pagat.com/draw/golf.html). Pagat.com. 2012-05-
+25. Retrieved 2013-08-21.
+2. Parlett, David (2004), The A–Z of card games (2nd ed.), Oxford University Press, pp. 169f,
+ISBN 978-0-19-860870-7
+3. Six Card Golf (https://bicyclecards.com/how-to-play/six-card-golf/), BicycleCards.com.
+Retrieved 25 January 2021.
+4. Six Card Golf (https://www.pagat.com/draw/golf.html#six), Pagat.com. Retrieved 25 January
+2021.
+5. "Golf" (p.51) in Card & Dice Games by N.A.C. Bathe, Robert Frederick Ltd, 2004.ISBN 1-
+889752-06-1
+6. "9 Cards of Golf - Rules | Golf" (https://boardgamegeek.com/thread/596029/9-cards-golf-rule
+s). BoardGameGeek. Retrieved 2022-02-11.
+7. Kiley, Oliver. "9 Cards of Golf - Rules" (https://boardgamegeek.com/thread/596029/9-cards-
+golf-rules). 9 Cards of Golf. BoardGameGeek.com. Retrieved 25 February 2021.
+Knocker's penalties and bonuses
+References
+Rules of Card Games: Golf (http://www.pagat.com/draw/golf.html)
+Retrieved from "https://en.wikipedia.org/w/index.php?title=Golf_(card_game)&oldid=1378647072"
+External links
